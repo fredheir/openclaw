@@ -21,12 +21,13 @@ export type SessionEntry = {
   modelOverride?: string;
   groupActivation?: "mention" | "always";
   groupActivationNeedsSystemIntro?: boolean;
+  queueMode?: "queue" | "interrupt";
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   model?: string;
   contextTokens?: number;
-  lastChannel?: "whatsapp" | "telegram" | "webchat";
+  lastChannel?: "whatsapp" | "telegram" | "discord" | "webchat";
   lastTo?: string;
   skillsSnapshot?: SessionSkillSnapshot;
 };
@@ -132,6 +133,7 @@ export async function updateLastRoute(params: {
     verboseLevel: existing?.verboseLevel,
     providerOverride: existing?.providerOverride,
     modelOverride: existing?.modelOverride,
+    queueMode: existing?.queueMode,
     inputTokens: existing?.inputTokens,
     outputTokens: existing?.outputTokens,
     totalTokens: existing?.totalTokens,

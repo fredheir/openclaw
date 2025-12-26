@@ -14,10 +14,13 @@
 ### Breaking
 - Config refactor: `inbound.*` removed; use top-level `routing` (allowlists + group rules + transcription), `messages` (prefixes/timestamps), and `session` (scoping/store/mainKey). No legacy keys read.
 - Heartbeat config moved to `agent.heartbeat`: set `every: "30m"` (duration string) and optional `model`. `agent.heartbeatMinutes` is removed, and heartbeats are disabled unless `agent.heartbeat.every` is set.
+- Heartbeats now run via the gateway runner (main session) and deliver to the last used channel by default. WhatsApp reply-heartbeat behavior is removed; use `agent.heartbeat.target`/`to` (or `target: "none"`) to control delivery.
 
 ### Fixes
 - Heartbeat replies now strip repeated `HEARTBEAT_OK` tails to avoid accidental “OK OK” spam.
+- Heartbeat failure logs now include the error reason instead of `[object Object]`.
 - Duration strings now accept `h` (hours) where durations are parsed (e.g., heartbeat intervals).
+- WhatsApp inbound now normalizes more wrapper types so quoted reply bodies are extracted reliably.
 - WhatsApp send now preserves existing JIDs (including group `@g.us`) instead of coercing to `@s.whatsapp.net`. (Thanks @arun-8687.)
 - Telegram/WhatsApp: reply context stays in `Body`/`ReplyTo*`, but outbound replies no longer thread to the original message. (Thanks @joshp123 for the PR and follow-up question.)
 - WhatsApp web creds persistence hardened; credentials are restored before auth checks and QR login auto-restarts if it stalls.
@@ -65,6 +68,7 @@
 ### Tests
 - Coverage added for models config merging, WhatsApp reply context, QR login flows, auto-reply behavior, and gateway SIGTERM timeouts.
 - Added gateway webhook coverage (auth, validation, and summary posting).
+- Vitest now isolates HOME/XDG config roots so tests never touch a real `~/.clawdis` install.
 
 ## 2.0.0-beta2 — 2025-12-21
 

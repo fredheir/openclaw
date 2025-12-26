@@ -7,15 +7,17 @@ import type { AppMessage, ThinkingLevel } from "@mariozechner/pi-agent-core";
 import {
   type Api,
   type AssistantMessage,
+  getEnvApiKey,
+  getOAuthApiKey,
   type Model,
-  type OAuthStorage,
-  setOAuthStorage,
+  type OAuthCredentials,
+  type OAuthProvider,
 } from "@mariozechner/pi-ai";
 import {
   buildSystemPrompt,
   createAgentSession,
-  defaultGetApiKey,
-  findModelByProviderAndId,
+  discoverAuthStorage,
+  discoverModels,
   SessionManager,
   SettingsManager,
   type Skill,
@@ -134,6 +136,7 @@ export type EmbeddedPiRunResult = {
 type EmbeddedPiQueueHandle = {
   queueMessage: (text: string) => Promise<void>;
   isStreaming: () => boolean;
+  abort: () => void;
 };
 
 const ACTIVE_EMBEDDED_RUNS = new Map<string, EmbeddedPiQueueHandle>();
@@ -141,7 +144,8 @@ const ACTIVE_EMBEDDED_RUNS = new Map<string, EmbeddedPiQueueHandle>();
 const OAUTH_FILENAME = "oauth.json";
 const DEFAULT_OAUTH_DIR = path.join(CONFIG_DIR, "credentials");
 let oauthStorageConfigured = false;
-let cachedDefaultApiKey: ReturnType<typeof defaultGetApiKey> | null = null;
+
+type OAuthStorage = Record<string, OAuthCredentials>;
 
 function resolveSessionLane(key: string) {
   const cleaned = key.trim() || "main";
@@ -228,18 +232,15 @@ function ensureOAuthStorage(): void {
   oauthStorageConfigured = true;
   const oauthPath = resolveClawdisOAuthPath();
   importLegacyOAuthIfNeeded(oauthPath);
-  setOAuthStorage({
-    load: () => loadOAuthStorageAt(oauthPath) ?? {},
-    save: (storage) => saveOAuthStorageAt(oauthPath, storage),
-  });
 }
 
-function getDefaultApiKey() {
-  if (!cachedDefaultApiKey) {
-    ensureOAuthStorage();
-    cachedDefaultApiKey = defaultGetApiKey();
-  }
-  return cachedDefaultApiKey;
+function isOAuthProvider(provider: string): provider is OAuthProvider {
+  return (
+    provider === "anthropic" ||
+    provider === "github-copilot" ||
+    provider === "google-gemini-cli" ||
+    provider === "google-antigravity"
+  );
 }
 
 export function queueEmbeddedPiMessage(
@@ -253,6 +254,27 @@ export function queueEmbeddedPiMessage(
   return true;
 }
 
+export function abortEmbeddedPiRun(sessionId: string): boolean {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  if (!handle) return false;
+  handle.abort();
+  return true;
+}
+
+export function isEmbeddedPiRunActive(sessionId: string): boolean {
+  return ACTIVE_EMBEDDED_RUNS.has(sessionId);
+}
+
+export function isEmbeddedPiRunStreaming(sessionId: string): boolean {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  if (!handle) return false;
+  return handle.isStreaming();
+}
+
+export function resolveEmbeddedSessionLane(key: string) {
+  return resolveSessionLane(key);
+}
+
 function mapThinkingLevel(level?: ThinkLevel): ThinkingLevel {
   // pi-agent-core supports "xhigh" too; Clawdis doesn't surface it for now.
   if (!level) return "off";
@@ -263,17 +285,32 @@ function resolveModel(
   provider: string,
   modelId: string,
   agentDir?: string,
-): { model?: Model<Api>; error?: string } {
-  const model = findModelByProviderAndId(
-    provider,
-    modelId,
-    agentDir,
-  ) as Model<Api> | null;
-  if (!model) return { error: `Unknown model: ${provider}/${modelId}` };
-  return { model };
+): {
+  model?: Model<Api>;
+  error?: string;
+  authStorage: ReturnType<typeof discoverAuthStorage>;
+  modelRegistry: ReturnType<typeof discoverModels>;
+} {
+  const resolvedAgentDir = agentDir ?? resolveClawdisAgentDir();
+  const authStorage = discoverAuthStorage(resolvedAgentDir);
+  const modelRegistry = discoverModels(authStorage, resolvedAgentDir);
+  const model = modelRegistry.find(provider, modelId) as Model<Api> | null;
+  if (!model) {
+    return {
+      error: `Unknown model: ${provider}/${modelId}`,
+      authStorage,
+      modelRegistry,
+    };
+  }
+  return { model, authStorage, modelRegistry };
 }
 
-async function getApiKeyForModel(model: Model<Api>): Promise<string> {
+async function getApiKeyForModel(
+  model: Model<Api>,
+  authStorage: ReturnType<typeof discoverAuthStorage>,
+): Promise<string> {
+  const storedKey = await authStorage.getApiKey(model.provider);
+  if (storedKey) return storedKey;
   ensureOAuthStorage();
   if (model.provider === "anthropic") {
     const fallbackKey = getFallbackApiKey();
@@ -281,8 +318,24 @@ async function getApiKeyForModel(model: Model<Api>): Promise<string> {
     const oauthEnv = process.env.ANTHROPIC_OAUTH_TOKEN;
     if (oauthEnv?.trim()) return oauthEnv.trim();
   }
-  const key = await getDefaultApiKey()(model);
-  if (key) return key;
+  const envKey = getEnvApiKey(model.provider);
+  if (envKey) return envKey;
+  if (isOAuthProvider(model.provider)) {
+    const oauthPath = resolveClawdisOAuthPath();
+    const storage = loadOAuthStorageAt(oauthPath);
+    if (storage) {
+      try {
+        const result = await getOAuthApiKey(model.provider, storage);
+        if (result?.apiKey) {
+          storage[model.provider] = result.newCredentials;
+          saveOAuthStorageAt(oauthPath, storage);
+          return result.apiKey;
+        }
+      } catch {
+        // fall through to error below
+      }
+    }
+  }
   throw new Error(`No API key found for provider "${model.provider}"`);
 }
 
@@ -357,10 +410,16 @@ export async function runEmbeddedPiAgent(params: {
       const modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
       await ensureClawdisModelsJson(params.config);
       const agentDir = resolveClawdisAgentDir();
-      const { model, error } = resolveModel(provider, modelId, agentDir);
+      const { model, error, authStorage, modelRegistry } = resolveModel(
+        provider,
+        modelId,
+        agentDir,
+      );
       if (!model) {
         throw new Error(error ?? `Unknown model: ${provider}/${modelId}`);
       }
+      const apiKey = await getApiKeyForModel(model, authStorage);
+      authStorage.setRuntimeApiKey(model.provider, apiKey);
 
       const thinkingLevel = mapThinkingLevel(params.thinkLevel);
 
@@ -439,6 +498,8 @@ export async function runEmbeddedPiAgent(params: {
         const { session } = await createAgentSession({
           cwd: resolvedWorkspace,
           agentDir,
+          authStorage,
+          modelRegistry,
           model,
           thinkingLevel,
           systemPrompt,
@@ -447,9 +508,6 @@ export async function runEmbeddedPiAgent(params: {
           tools,
           sessionManager,
           settingsManager,
-          getApiKey: async (m) => {
-            return await getApiKeyForModel(m as Model<Api>);
-          },
           skills: promptSkills,
           contextFiles,
         });
@@ -461,20 +519,26 @@ export async function runEmbeddedPiAgent(params: {
         if (prior.length > 0) {
           session.agent.replaceMessages(prior);
         }
+        let aborted = Boolean(params.abortSignal?.aborted);
+        const abortRun = () => {
+          aborted = true;
+          void session.abort();
+        };
         const queueHandle: EmbeddedPiQueueHandle = {
           queueMessage: async (text: string) => {
             await session.queueMessage(text);
           },
           isStreaming: () => session.isStreaming,
+          abort: abortRun,
         };
         ACTIVE_EMBEDDED_RUNS.set(params.sessionId, queueHandle);
-        let aborted = Boolean(params.abortSignal?.aborted);
 
         const {
           assistantTexts,
           toolMetas,
           unsubscribe,
           flush: flushToolDebouncer,
+          waitForCompactionRetry,
         } = subscribeEmbeddedPiSession({
           session,
           runId: params.runId,
@@ -488,8 +552,7 @@ export async function runEmbeddedPiAgent(params: {
 
         const abortTimer = setTimeout(
           () => {
-            aborted = true;
-            void session.abort();
+            abortRun();
           },
           Math.max(1, params.timeoutMs),
         );
@@ -497,8 +560,7 @@ export async function runEmbeddedPiAgent(params: {
         let messagesSnapshot: AppMessage[] = [];
         let sessionIdUsed = session.sessionId;
         const onAbort = () => {
-          aborted = true;
-          void session.abort();
+          abortRun();
         };
         if (params.abortSignal) {
           if (params.abortSignal.aborted) {
@@ -515,10 +577,10 @@ export async function runEmbeddedPiAgent(params: {
             await session.prompt(params.prompt);
           } catch (err) {
             promptError = err;
-          } finally {
-            messagesSnapshot = session.messages.slice();
-            sessionIdUsed = session.sessionId;
           }
+          await waitForCompactionRetry();
+          messagesSnapshot = session.messages.slice();
+          sessionIdUsed = session.sessionId;
         } finally {
           clearTimeout(abortTimer);
           unsubscribe();

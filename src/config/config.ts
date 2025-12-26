@@ -84,7 +84,7 @@ export type HookMappingConfig = {
   messageTemplate?: string;
   textTemplate?: string;
   deliver?: boolean;
-  channel?: "last" | "whatsapp" | "telegram";
+  channel?: "last" | "whatsapp" | "telegram" | "discord";
   to?: string;
   thinking?: string;
   timeoutSeconds?: number;
@@ -136,6 +136,26 @@ export type TelegramConfig = {
   webhookPath?: string;
 };
 
+export type DiscordConfig = {
+  token?: string;
+  allowFrom?: Array<string | number>;
+  guildAllowFrom?: {
+    guilds?: Array<string | number>;
+    users?: Array<string | number>;
+  };
+  requireMention?: boolean;
+  mediaMaxMb?: number;
+};
+
+export type QueueMode = "queue" | "interrupt";
+
+export type QueueModeBySurface = {
+  whatsapp?: QueueMode;
+  telegram?: QueueMode;
+  discord?: QueueMode;
+  webchat?: QueueMode;
+};
+
 export type GroupChatConfig = {
   requireMention?: boolean;
   mentionPatterns?: string[];
@@ -159,6 +179,10 @@ export type RoutingConfig = {
   groupChat?: GroupChatConfig;
   /** Per-group configuration keyed by JID (e.g., "120363406978274029@g.us"). */
   groups?: Record<string, PerGroupConfig>;
+  queue?: {
+    mode?: QueueMode;
+    bySurface?: QueueModeBySurface;
+  };
 };
 
 export type MessagesConfig = {
@@ -338,6 +362,12 @@ export type ClawdisConfig = {
       every?: string;
       /** Heartbeat model override (provider/model). */
       model?: string;
+      /** Delivery target (last|whatsapp|telegram|discord|none). */
+      target?: "last" | "whatsapp" | "telegram" | "discord" | "none";
+      /** Optional delivery override (E.164 for WhatsApp, chat id for Telegram). */
+      to?: string;
+      /** Override the heartbeat prompt body (default: "HEARTBEAT"). */
+      prompt?: string;
     };
     /** Max concurrent agent runs across all conversations. Default: 1 (sequential). */
     maxConcurrent?: number;
@@ -356,6 +386,7 @@ export type ClawdisConfig = {
   session?: SessionConfig;
   web?: WebConfig;
   telegram?: TelegramConfig;
+  discord?: DiscordConfig;
   cron?: CronConfig;
   hooks?: HooksConfig;
   bridge?: BridgeConfig;
@@ -437,6 +468,17 @@ const PerGroupSchema = z.object({
   extraInstructions: z.string().optional(),
 });
 
+const QueueModeSchema = z.union([z.literal("queue"), z.literal("interrupt")]);
+
+const QueueModeBySurfaceSchema = z
+  .object({
+    whatsapp: QueueModeSchema.optional(),
+    telegram: QueueModeSchema.optional(),
+    discord: QueueModeSchema.optional(),
+    webchat: QueueModeSchema.optional(),
+  })
+  .optional();
+
 const TranscribeAudioSchema = z
   .object({
     command: z.array(z.string()),
@@ -468,6 +510,17 @@ const HeartbeatSchema = z
   .object({
     every: z.string().optional(),
     model: z.string().optional(),
+    target: z
+      .union([
+        z.literal("last"),
+        z.literal("whatsapp"),
+        z.literal("telegram"),
+        z.literal("discord"),
+        z.literal("none"),
+      ])
+      .optional(),
+    to: z.string().optional(),
+    prompt: z.string().optional(),
   })
   .superRefine((val, ctx) => {
     if (!val.every) return;
@@ -489,6 +542,12 @@ const RoutingSchema = z
     groupChat: GroupChatSchema,
     transcribeAudio: TranscribeAudioSchema,
     groups: z.record(z.string(), PerGroupSchema).optional(),
+    queue: z
+      .object({
+        mode: QueueModeSchema.optional(),
+        bySurface: QueueModeBySurfaceSchema,
+      })
+      .optional(),
   })
   .optional();
 
@@ -511,7 +570,12 @@ const HookMappingSchema = z
     textTemplate: z.string().optional(),
     deliver: z.boolean().optional(),
     channel: z
-      .union([z.literal("last"), z.literal("whatsapp"), z.literal("telegram")])
+      .union([
+        z.literal("last"),
+        z.literal("whatsapp"),
+        z.literal("telegram"),
+        z.literal("discord"),
+      ])
       .optional(),
     to: z.string().optional(),
     thinking: z.string().optional(),
@@ -678,6 +742,20 @@ const ClawdisSchema = z.object({
       webhookUrl: z.string().optional(),
       webhookSecret: z.string().optional(),
       webhookPath: z.string().optional(),
+    })
+    .optional(),
+  discord: z
+    .object({
+      token: z.string().optional(),
+      allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
+      guildAllowFrom: z
+        .object({
+          guilds: z.array(z.union([z.string(), z.number()])).optional(),
+          users: z.array(z.union([z.string(), z.number()])).optional(),
+        })
+        .optional(),
+      requireMention: z.boolean().optional(),
+      mediaMaxMb: z.number().positive().optional(),
     })
     .optional(),
   bridge: z

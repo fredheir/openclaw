@@ -19,7 +19,7 @@ describe("resolveConfiguredModelRef", () => {
     expect(resolved).toEqual({ provider: "openai", model: "gpt-4.1-mini" });
   });
 
-  it("falls back to default provider when agent.model omits it", () => {
+  it("falls back to anthropic when agent.model omits provider", () => {
     const cfg = {
       agent: { model: "claude-opus-4-5" },
     } satisfies ClawdisConfig;
@@ -31,7 +31,7 @@ describe("resolveConfiguredModelRef", () => {
     });
 
     expect(resolved).toEqual({
-      provider: DEFAULT_PROVIDER,
+      provider: "anthropic",
       model: "claude-opus-4-5",
     });
   });

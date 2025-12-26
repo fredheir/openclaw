@@ -28,6 +28,7 @@ Status: WhatsApp Web via Baileys only. Gateway owns the single session.
 
 ## Inbound flow (DM + group)
 - WhatsApp events come from `messages.upsert` (Baileys).
+- Inbox listeners are detached on shutdown to avoid accumulating event handlers in tests/restarts.
 - Status/broadcast chats are ignored.
 - Direct chats use E.164; groups use group JID.
 - **Allowlist**: `routing.allowFrom` enforced for direct chats only.
@@ -86,10 +87,9 @@ Status: WhatsApp Web via Baileys only. Gateway owns the single session.
 
 ## Heartbeats
 - **Gateway heartbeat** logs connection health (`web.heartbeatSeconds`, default 60s).
-- **Reply heartbeat** asks agent on a timer (`agent.heartbeat.every`).
-  - Uses `HEARTBEAT` prompt + `HEARTBEAT_TOKEN` skip behavior.
-  - Skips if queue busy or last inbound was a group.
-  - Falls back to last direct recipient if needed.
+- **Agent heartbeat** is global (`agent.heartbeat.*`) and runs in the main session.
+  - Uses `HEARTBEAT` prompt + `HEARTBEAT_OK` skip behavior.
+  - Delivery defaults to the last used channel (or configured target).
 
 ## Reconnect behavior
 - Backoff policy: `web.reconnect`:
@@ -106,6 +106,8 @@ Status: WhatsApp Web via Baileys only. Gateway owns the single session.
 - `agent.mediaMaxMb`
 - `agent.heartbeat.every`
 - `agent.heartbeat.model` (optional override)
+- `agent.heartbeat.target`
+- `agent.heartbeat.to`
 - `session.*` (scope, idle, store, mainKey)
 - `web.heartbeatSeconds`
 - `web.reconnect.*`

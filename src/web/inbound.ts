@@ -6,7 +6,10 @@ import type {
 import {
   DisconnectReason,
   downloadMediaMessage,
+  extractMessageContent,
+  getContentType,
   isJidGroup,
+  normalizeMessageContent,
 } from "@whiskeysockets/baileys";
 
 import { loadConfig } from "../config/config.js";
@@ -115,9 +118,12 @@ export async function monitorWebInbox(options: {
     }
   };
 
-  sock.ev.on("messages.upsert", async (upsert) => {
+  const handleMessagesUpsert = async (upsert: {
+    type?: string;
+    messages?: Array<import("@whiskeysockets/baileys").WAMessage>;
+  }) => {
     if (upsert.type !== "notify") return;
-    for (const msg of upsert.messages) {
+    for (const msg of upsert.messages ?? []) {
       const id = msg.key?.id ?? undefined;
       // De-dupe on message id; Baileys can emit retries.
       if (id && seen.has(id)) continue;
@@ -295,37 +301,58 @@ export async function monitorWebInbox(options: {
         );
       }
     }
-  });
+  };
+  sock.ev.on("messages.upsert", handleMessagesUpsert);
 
-  sock.ev.on(
-    "connection.update",
-    (update: Partial<import("@whiskeysockets/baileys").ConnectionState>) => {
-      try {
-        if (update.connection === "close") {
-          const status = getStatusCode(update.lastDisconnect?.error);
-          onCloseResolve?.({
-            status,
-            isLoggedOut: status === DisconnectReason.loggedOut,
-            error: update.lastDisconnect?.error,
-          });
-        }
-      } catch (err) {
-        inboundLogger.error(
-          { error: String(err) },
-          "connection.update handler error",
-        );
+  const handleConnectionUpdate = (
+    update: Partial<import("@whiskeysockets/baileys").ConnectionState>,
+  ) => {
+    try {
+      if (update.connection === "close") {
+        const status = getStatusCode(update.lastDisconnect?.error);
         onCloseResolve?.({
-          status: undefined,
-          isLoggedOut: false,
-          error: err,
+          status,
+          isLoggedOut: status === DisconnectReason.loggedOut,
+          error: update.lastDisconnect?.error,
         });
       }
-    },
-  );
+    } catch (err) {
+      inboundLogger.error(
+        { error: String(err) },
+        "connection.update handler error",
+      );
+      onCloseResolve?.({
+        status: undefined,
+        isLoggedOut: false,
+        error: err,
+      });
+    }
+  };
+  sock.ev.on("connection.update", handleConnectionUpdate);
 
   return {
     close: async () => {
       try {
+        const ev = sock.ev as unknown as {
+          off?: (event: string, listener: (...args: unknown[]) => void) => void;
+          removeListener?: (
+            event: string,
+            listener: (...args: unknown[]) => void,
+          ) => void;
+        };
+        const messagesUpsertHandler = handleMessagesUpsert as unknown as (
+          ...args: unknown[]
+        ) => void;
+        const connectionUpdateHandler = handleConnectionUpdate as unknown as (
+          ...args: unknown[]
+        ) => void;
+        if (typeof ev.off === "function") {
+          ev.off("messages.upsert", messagesUpsertHandler);
+          ev.off("connection.update", connectionUpdateHandler);
+        } else if (typeof ev.removeListener === "function") {
+          ev.removeListener("messages.upsert", messagesUpsertHandler);
+          ev.removeListener("connection.update", connectionUpdateHandler);
+        }
         sock.ws?.close();
       } catch (err) {
         logVerbose(`Socket close failed: ${String(err)}`);
@@ -391,17 +418,47 @@ export async function monitorWebInbox(options: {
 function unwrapMessage(
   message: proto.IMessage | undefined,
 ): proto.IMessage | undefined {
+  const normalized = normalizeMessageContent(
+    message as proto.IMessage | undefined,
+  );
+  return normalized as proto.IMessage | undefined;
+}
+
+function extractContextInfo(
+  message: proto.IMessage | undefined,
+): proto.IContextInfo | undefined {
   if (!message) return undefined;
-  if (message.ephemeralMessage?.message) {
-    return unwrapMessage(message.ephemeralMessage.message as proto.IMessage);
+  const contentType = getContentType(message);
+  const candidate = contentType
+    ? (message as Record<string, unknown>)[contentType]
+    : undefined;
+  const contextInfo =
+    candidate && typeof candidate === "object" && "contextInfo" in candidate
+      ? (candidate as { contextInfo?: proto.IContextInfo }).contextInfo
+      : undefined;
+  if (contextInfo) return contextInfo;
+  const fallback =
+    message.extendedTextMessage?.contextInfo ??
+    message.imageMessage?.contextInfo ??
+    message.videoMessage?.contextInfo ??
+    message.documentMessage?.contextInfo ??
+    message.audioMessage?.contextInfo ??
+    message.stickerMessage?.contextInfo ??
+    message.buttonsResponseMessage?.contextInfo ??
+    message.listResponseMessage?.contextInfo ??
+    message.templateButtonReplyMessage?.contextInfo ??
+    message.interactiveResponseMessage?.contextInfo ??
+    message.buttonsMessage?.contextInfo ??
+    message.listMessage?.contextInfo;
+  if (fallback) return fallback;
+  for (const value of Object.values(message)) {
+    if (!value || typeof value !== "object") continue;
+    if (!("contextInfo" in value)) continue;
+    const candidateContext = (value as { contextInfo?: proto.IContextInfo })
+      .contextInfo;
+    if (candidateContext) return candidateContext;
   }
-  if (message.viewOnceMessage?.message) {
-    return unwrapMessage(message.viewOnceMessage.message as proto.IMessage);
-  }
-  if (message.viewOnceMessageV2?.message) {
-    return unwrapMessage(message.viewOnceMessageV2.message as proto.IMessage);
-  }
-  return message;
+  return undefined;
 }
 
 function extractMentionedJids(
@@ -434,14 +491,27 @@ export function extractText(
 ): string | undefined {
   const message = unwrapMessage(rawMessage);
   if (!message) return undefined;
-  if (typeof message.conversation === "string" && message.conversation.trim()) {
-    return message.conversation.trim();
+  const extracted = extractMessageContent(message);
+  const candidates = [
+    message,
+    extracted && extracted !== message ? extracted : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (
+      typeof candidate.conversation === "string" &&
+      candidate.conversation.trim()
+    ) {
+      return candidate.conversation.trim();
+    }
+    const extended = candidate.extendedTextMessage?.text;
+    if (extended?.trim()) return extended.trim();
+    const caption =
+      candidate.imageMessage?.caption ??
+      candidate.videoMessage?.caption ??
+      candidate.documentMessage?.caption;
+    if (caption?.trim()) return caption.trim();
   }
-  const extended = message.extendedTextMessage?.text;
-  if (extended?.trim()) return extended.trim();
-  const caption =
-    message.imageMessage?.caption ?? message.videoMessage?.caption;
-  if (caption?.trim()) return caption.trim();
   return undefined;
 }
 
@@ -465,19 +535,21 @@ function describeReplyContext(rawMessage: proto.IMessage | undefined): {
 } | null {
   const message = unwrapMessage(rawMessage);
   if (!message) return null;
-  const contextInfo =
-    message.extendedTextMessage?.contextInfo ??
-    message.imageMessage?.contextInfo ??
-    message.videoMessage?.contextInfo ??
-    message.documentMessage?.contextInfo ??
-    message.audioMessage?.contextInfo ??
-    message.stickerMessage?.contextInfo ??
-    message.buttonsResponseMessage?.contextInfo ??
-    message.listResponseMessage?.contextInfo;
-  const quoted = contextInfo?.quotedMessage as proto.IMessage | undefined;
+  const contextInfo = extractContextInfo(message);
+  const quoted = normalizeMessageContent(
+    contextInfo?.quotedMessage as proto.IMessage | undefined,
+  ) as proto.IMessage | undefined;
   if (!quoted) return null;
   const body = extractText(quoted) ?? extractMediaPlaceholder(quoted);
-  if (!body) return null;
+  if (!body) {
+    const quotedType = quoted ? getContentType(quoted) : undefined;
+    logVerbose(
+      `Quoted message missing extractable body${
+        quotedType ? ` (type ${quotedType})` : ""
+      }`,
+    );
+    return null;
+  }
   const senderJid = contextInfo?.participant ?? undefined;
   const senderE164 = senderJid
     ? (jidToE164(senderJid) ?? senderJid)

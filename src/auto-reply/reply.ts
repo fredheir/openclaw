@@ -16,7 +16,9 @@ import {
   resolveConfiguredModelRef,
 } from "../agents/model-selection.js";
 import {
+  abortEmbeddedPiRun,
   queueEmbeddedPiMessage,
+  resolveEmbeddedSessionLane,
   runEmbeddedPiAgent,
   setRateLimitFallbackCallback,
 } from "../agents/pi-embedded.js";
@@ -40,6 +42,7 @@ import { logVerbose } from "../globals.js";
 import { buildProviderSummary } from "../infra/provider-summary.js";
 import { triggerClawdisRestart } from "../infra/restart.js";
 import { drainSystemEvents } from "../infra/system-events.js";
+import { clearCommandLane, getQueueSize } from "../process/command-queue.js";
 import { defaultRuntime } from "../runtime.js";
 import { normalizeE164 } from "../utils.js";
 import { resolveHeartbeatSeconds } from "../web/reconnect.js";
@@ -69,6 +72,8 @@ const SYSTEM_MARK = "⚙️";
 
 const BARE_SESSION_RESET_PROMPT =
   "A new session was started via /new or /reset. Say hi briefly (1-2 sentences) and ask what the user wants to do next. Do not mention internal steps, files, tools, or reasoning.";
+
+type QueueMode = "queue" | "interrupt";
 
 export function extractThinkDirective(body?: string): {
   cleaned: string;
@@ -111,6 +116,45 @@ export function extractVerboseDirective(body?: string): {
     cleaned,
     verboseLevel,
     rawLevel: match?.[1],
+    hasDirective: !!match,
+  };
+}
+
+function normalizeQueueMode(raw?: string): QueueMode | undefined {
+  if (!raw) return undefined;
+  const cleaned = raw.trim().toLowerCase();
+  if (cleaned === "queue" || cleaned === "queued") return "queue";
+  if (
+    cleaned === "interrupt" ||
+    cleaned === "interrupts" ||
+    cleaned === "abort"
+  )
+    return "interrupt";
+  return undefined;
+}
+
+export function extractQueueDirective(body?: string): {
+  cleaned: string;
+  queueMode?: QueueMode;
+  queueReset: boolean;
+  rawMode?: string;
+  hasDirective: boolean;
+} {
+  if (!body) return { cleaned: "", hasDirective: false, queueReset: false };
+  const match = body.match(/(?:^|\s)\/queue(?=$|\s|:)\s*:?\s*([a-zA-Z-]+)\b/i);
+  const rawMode = match?.[1];
+  const lowered = rawMode?.trim().toLowerCase();
+  const queueReset =
+    lowered === "default" || lowered === "reset" || lowered === "clear";
+  const queueMode = queueReset ? undefined : normalizeQueueMode(rawMode);
+  const cleaned = match
+    ? body.replace(match[0], "").replace(/\s+/g, " ").trim()
+    : body.trim();
+  return {
+    cleaned,
+    queueMode,
+    queueReset,
+    rawMode,
     hasDirective: !!match,
   };
 }
@@ -159,7 +203,39 @@ function stripMentions(
   }
   // Generic mention patterns like @123456789 or plain digits
   result = result.replace(/@[0-9+]{5,}/g, " ");
+  // Discord-style mentions (<@123> or <@!123>)
+  result = result.replace(/<@!?\d+>/g, " ");
   return result.replace(/\s+/g, " ").trim();
+}
+
+function defaultQueueModeForSurface(surface?: string): QueueMode {
+  const normalized = surface?.trim().toLowerCase();
+  if (normalized === "discord") return "queue";
+  if (normalized === "webchat") return "queue";
+  return "interrupt";
+}
+
+function resolveQueueMode(params: {
+  cfg: ClawdisConfig;
+  surface?: string;
+  sessionEntry?: SessionEntry;
+  inlineMode?: QueueMode;
+}): QueueMode {
+  const surfaceKey = params.surface?.trim().toLowerCase();
+  const queueCfg = params.cfg.routing?.queue;
+  const surfaceMode =
+    surfaceKey && queueCfg?.bySurface
+      ? (queueCfg.bySurface as Record<string, QueueMode | undefined>)[
+          surfaceKey
+        ]
+      : undefined;
+  return (
+    params.inlineMode ??
+    params.sessionEntry?.queueMode ??
+    surfaceMode ??
+    queueCfg?.mode ??
+    defaultQueueModeForSurface(surfaceKey)
+  );
 }
 
 export async function getReplyFromConfig(
@@ -358,6 +434,7 @@ export async function getReplyFromConfig(
     groupActivationNeedsSystemIntro:
       entry?.groupActivationNeedsSystemIntro ??
       baseEntry?.groupActivationNeedsSystemIntro,
+    queueMode: baseEntry?.queueMode,
   };
   sessionStore[sessionKey] = sessionEntry;
   await saveSessionStore(storePath, sessionStore);
@@ -386,8 +463,15 @@ export async function getReplyFromConfig(
     rawModel: rawModelDirective,
     hasDirective: hasModelDirective,
   } = extractModelDirective(verboseCleaned);
-  sessionCtx.Body = modelCleaned;
-  sessionCtx.BodyStripped = modelCleaned;
+  const {
+    cleaned: queueCleaned,
+    queueMode: inlineQueueMode,
+    queueReset: inlineQueueReset,
+    rawMode: rawQueueMode,
+    hasDirective: hasQueueDirective,
+  } = extractQueueDirective(modelCleaned);
+  sessionCtx.Body = queueCleaned;
+  sessionCtx.BodyStripped = queueCleaned;
 
   const defaultGroupActivation = () => {
     const requireMention = cfg.routing?.groupChat?.requireMention;
@@ -472,9 +556,14 @@ export async function getReplyFromConfig(
     DEFAULT_CONTEXT_TOKENS;
 
   const directiveOnly = (() => {
-    if (!hasThinkDirective && !hasVerboseDirective && !hasModelDirective)
+    if (
+      !hasThinkDirective &&
+      !hasVerboseDirective &&
+      !hasModelDirective &&
+      !hasQueueDirective
+    )
       return false;
-    const stripped = stripStructuralPrefixes(modelCleaned ?? "");
+    const stripped = stripStructuralPrefixes(queueCleaned ?? "");
     const noMentions = isGroup ? stripMentions(stripped, ctx, cfg) : stripped;
     return noMentions.length === 0;
   })();
@@ -514,6 +603,12 @@ export async function getReplyFromConfig(
       cleanupTyping();
       return {
         text: `Unrecognized verbose level "${rawVerboseLevel ?? ""}". Valid levels: off, on.`,
+      };
+    }
+    if (hasQueueDirective && !inlineQueueMode && !inlineQueueReset) {
+      cleanupTyping();
+      return {
+        text: `Unrecognized queue mode "${rawQueueMode ?? ""}". Valid modes: queue, interrupt.`,
       };
     }
 
@@ -558,6 +653,11 @@ export async function getReplyFromConfig(
           sessionEntry.modelOverride = modelSelection.model;
         }
       }
+      if (hasQueueDirective && inlineQueueReset) {
+        delete sessionEntry.queueMode;
+      } else if (hasQueueDirective && inlineQueueMode) {
+        sessionEntry.queueMode = inlineQueueMode;
+      }
       sessionEntry.updatedAt = Date.now();
       sessionStore[sessionKey] = sessionEntry;
       await saveSessionStore(storePath, sessionStore);
@@ -585,6 +685,11 @@ export async function getReplyFromConfig(
           ? `Model reset to default (${label}).`
           : `Model set to ${label}.`,
       );
+    }
+    if (hasQueueDirective && inlineQueueMode) {
+      parts.push(`${SYSTEM_MARK} Queue mode set to ${inlineQueueMode}.`);
+    } else if (hasQueueDirective && inlineQueueReset) {
+      parts.push(`${SYSTEM_MARK} Queue mode reset to default.`);
     }
     const ack = parts.join(" ").trim();
     cleanupTyping();
@@ -635,12 +740,18 @@ export async function getReplyFromConfig(
         }
       }
     }
+    if (hasQueueDirective && inlineQueueReset) {
+      delete sessionEntry.queueMode;
+      updated = true;
+    }
     if (updated) {
       sessionEntry.updatedAt = Date.now();
       sessionStore[sessionKey] = sessionEntry;
       await saveSessionStore(storePath, sessionStore);
     }
   }
+  const perMessageQueueMode =
+    hasQueueDirective && !inlineQueueReset ? inlineQueueMode : undefined;
 
   // Optional allowlist by origin number (E.164 without whatsapp: prefix)
   const configuredAllowFrom = cfg.routing?.allowFrom;
@@ -836,9 +947,18 @@ export async function getReplyFromConfig(
           defaultGroupActivation();
         const subject = sessionCtx.GroupSubject?.trim();
         const members = sessionCtx.GroupMembers?.trim();
+        const surface = sessionCtx.Surface?.trim().toLowerCase();
+        const surfaceLabel = (() => {
+          if (!surface) return "chat";
+          if (surface === "whatsapp") return "WhatsApp";
+          if (surface === "telegram") return "Telegram";
+          if (surface === "discord") return "Discord";
+          if (surface === "webchat") return "WebChat";
+          return `${surface.at(0)?.toUpperCase() ?? ""}${surface.slice(1)}`;
+        })();
         const subjectLine = subject
-          ? `You are replying inside the WhatsApp group "${subject}".`
-          : "You are replying inside a WhatsApp group chat.";
+          ? `You are replying inside the ${surfaceLabel} group "${subject}".`
+          : `You are replying inside a ${surfaceLabel} group chat.`;
         const membersLine = members ? `Group members: ${members}.` : undefined;
         const activationLine =
           activation === "always"
@@ -1027,7 +1147,28 @@ export async function getReplyFromConfig(
         .trim()
     : queueBodyBase;
 
-  if (queueEmbeddedPiMessage(sessionIdFinal, queuedBody)) {
+  const resolvedQueueMode = resolveQueueMode({
+    cfg,
+    surface: sessionCtx.Surface,
+    sessionEntry,
+    inlineMode: perMessageQueueMode,
+  });
+  const sessionLaneKey = resolveEmbeddedSessionLane(
+    sessionKey ?? sessionIdFinal,
+  );
+  const laneSize = getQueueSize(sessionLaneKey);
+  if (resolvedQueueMode === "interrupt" && laneSize > 0) {
+    const cleared = clearCommandLane(sessionLaneKey);
+    const aborted = abortEmbeddedPiRun(sessionIdFinal);
+    logVerbose(
+      `Interrupting ${sessionLaneKey} (cleared ${cleared}, aborted=${aborted})`,
+    );
+  }
+
+  if (
+    resolvedQueueMode === "queue" &&
+    queueEmbeddedPiMessage(sessionIdFinal, queuedBody)
+  ) {
     if (sessionEntry && sessionStore && sessionKey) {
       sessionEntry.updatedAt = Date.now();
       sessionStore[sessionKey] = sessionEntry;
@@ -1042,46 +1183,59 @@ export async function getReplyFromConfig(
       await startTypingLoop();
     }
     const runId = crypto.randomUUID();
-    const runResult = await runEmbeddedPiAgent({
-      sessionId: sessionIdFinal,
-      sessionKey,
-      sessionFile,
-      workspaceDir,
-      config: cfg,
-      skillsSnapshot,
-      prompt: commandBody,
-      extraSystemPrompt:
-        [groupIntro, perGroupExtra].filter(Boolean).join("\n\n").trim() ||
-        undefined,
-      ownerNumbers: ownerList.length > 0 ? ownerList : undefined,
-      enforceFinalTag:
-        provider === "lmstudio" || provider === "ollama" ? true : undefined,
-      provider,
-      model,
-      thinkLevel: resolvedThinkLevel,
-      verboseLevel: resolvedVerboseLevel,
-      timeoutMs,
-      runId,
-      onPartialReply: opts?.onPartialReply
-        ? async (payload) => {
-            await startTypingOnText(payload.text);
-            await opts.onPartialReply?.({
-              text: payload.text,
-              mediaUrls: payload.mediaUrls,
-            });
-          }
-        : undefined,
-      shouldEmitToolResult,
-      onToolResult: opts?.onToolResult
-        ? async (payload) => {
-            await startTypingOnText(payload.text);
-            await opts.onToolResult?.({
-              text: payload.text,
-              mediaUrls: payload.mediaUrls,
-            });
-          }
-        : undefined,
-    });
+    let runResult: Awaited<ReturnType<typeof runEmbeddedPiAgent>>;
+    try {
+      runResult = await runEmbeddedPiAgent({
+        sessionId: sessionIdFinal,
+        sessionKey,
+        sessionFile,
+        workspaceDir,
+        config: cfg,
+        skillsSnapshot,
+        prompt: commandBody,
+        extraSystemPrompt:
+          [groupIntro, perGroupExtra].filter(Boolean).join("\n\n").trim() ||
+          undefined,
+        ownerNumbers: ownerList.length > 0 ? ownerList : undefined,
+        enforceFinalTag:
+          provider === "lmstudio" || provider === "ollama" ? true : undefined,
+        provider,
+        model,
+        thinkLevel: resolvedThinkLevel,
+        verboseLevel: resolvedVerboseLevel,
+        timeoutMs,
+        runId,
+        onPartialReply: opts?.onPartialReply
+          ? async (payload) => {
+              await startTypingOnText(payload.text);
+              await opts.onPartialReply?.({
+                text: payload.text,
+                mediaUrls: payload.mediaUrls,
+              });
+            }
+          : undefined,
+        shouldEmitToolResult,
+        onToolResult: opts?.onToolResult
+          ? async (payload) => {
+              await startTypingOnText(payload.text);
+              await opts.onToolResult?.({
+                text: payload.text,
+                mediaUrls: payload.mediaUrls,
+              });
+            }
+          : undefined,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isContextOverflow =
+        /context.*overflow|too large|context window/i.test(message);
+      defaultRuntime.error(`Embedded agent failed before reply: ${message}`);
+      return {
+        text: isContextOverflow
+          ? "⚠️ Context overflow - conversation too long. Starting fresh might help!"
+          : "⚠️ Agent failed. Check gateway logs.",
+      };
+    }
 
     if (
       shouldInjectGroupIntro &&

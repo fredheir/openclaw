@@ -85,6 +85,47 @@ Group messages default to **require mention** (either metadata mention or regex 
 }
 ```
 
+### `routing.queue`
+
+Controls how inbound messages behave when an agent run is already active.
+
+```json5
+{
+  routing: {
+    queue: {
+      mode: "interrupt", // global default: queue | interrupt
+      bySurface: {
+        whatsapp: "interrupt",
+        telegram: "interrupt",
+        discord: "queue",
+        webchat: "queue"
+      }
+    }
+  }
+}
+```
+
+### `discord` (bot transport)
+
+Configure the Discord bot by setting the bot token and optional gating:
+
+```json5
+{
+  discord: {
+    token: "your-bot-token",
+    allowFrom: ["discord:1234567890", "*"], // optional DM allowlist (user ids)
+    guildAllowFrom: {
+      guilds: ["123456789012345678"],      // optional guild allowlist (ids)
+      users: ["987654321098765432"]        // optional user allowlist (ids)
+    },
+    requireMention: true,                   // require @bot mentions in guilds
+    mediaMaxMb: 8                           // clamp inbound media size
+  }
+}
+```
+
+Clawdis reads `DISCORD_BOT_TOKEN` or `discord.token` to start the provider. Use `user:<id>` (DM) or `channel:<id>` (guild channel) when specifying delivery targets for cron/CLI commands.
+
 ### `agent.workspace`
 
 Sets the **single global workspace directory** used by the agent for file operations.
@@ -130,7 +171,8 @@ Controls the embedded agent runtime (model/thinking/verbose/timeouts).
     timeoutSeconds: 600,
     mediaMaxMb: 5,
     heartbeat: {
-      every: "30m"
+      every: "30m",
+      target: "last"
     },
     maxConcurrent: 3,
     bash: {
@@ -151,6 +193,9 @@ deprecation fallback.
 - `every`: duration string (`ms`, `s`, `m`, `h`); default unit minutes. Omit or set
   `0m` to disable.
 - `model`: optional override model for heartbeat runs (`provider/model`).
+- `target`: optional delivery channel (`last`, `whatsapp`, `telegram`, `discord`, `none`). Default: `last`.
+- `to`: optional recipient override (E.164 for WhatsApp, chat id for Telegram).
+- `prompt`: optional override for the heartbeat body (default: `HEARTBEAT`).
 
 `agent.bash` configures background bash defaults:
 - `backgroundMs`: time before auto-background (ms, default 20000)
@@ -506,7 +551,7 @@ Template placeholders are expanded in `routing.transcribeAudio.command` (and any
 | `{{GroupMembers}}` | Group members preview (best effort) |
 | `{{SenderName}}` | Sender display name (best effort) |
 | `{{SenderE164}}` | Sender phone number (best effort) |
-| `{{Surface}}` | Surface hint (whatsapp|telegram|webchat|…) |
+| `{{Surface}}` | Surface hint (whatsapp|telegram|discord|webchat|…) |
 
 ## Cron (Gateway scheduler)
 

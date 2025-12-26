@@ -4,8 +4,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../agents/pi-embedded.js", () => ({
+  abortEmbeddedPiRun: vi.fn().mockReturnValue(false),
   runEmbeddedPiAgent: vi.fn(),
   queueEmbeddedPiMessage: vi.fn().mockReturnValue(false),
+  resolveEmbeddedSessionLane: (key: string) =>
+    `session:${key.trim() || "main"}`,
 }));
 
 import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
@@ -98,6 +101,30 @@ describe("trigger handling", () => {
       const text = Array.isArray(res) ? res[0]?.text : res?.text;
       expect(text).toContain("Status");
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  it("returns a context overflow fallback when the embedded agent throws", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockRejectedValue(
+        new Error("Context window exceeded"),
+      );
+
+      const res = await getReplyFromConfig(
+        {
+          Body: "hello",
+          From: "+1002",
+          To: "+2000",
+        },
+        {},
+        makeCfg(home),
+      );
+
+      const text = Array.isArray(res) ? res[0]?.text : res?.text;
+      expect(text).toBe(
+        "⚠️ Context overflow - conversation too long. Starting fresh might help!",
+      );
+      expect(runEmbeddedPiAgent).toHaveBeenCalledOnce();
     });
   });
 
@@ -359,6 +386,108 @@ describe("trigger handling", () => {
       expect(text).toBe("ok");
       expect(text).not.toMatch(/Thinking level set/i);
       expect(runEmbeddedPiAgent).toHaveBeenCalledOnce();
+    });
+  });
+});
+
+describe("group intro prompts", () => {
+  it("labels Discord groups using the surface metadata", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      await getReplyFromConfig(
+        {
+          Body: "status update",
+          From: "group:dev",
+          To: "+1888",
+          ChatType: "group",
+          GroupSubject: "Release Squad",
+          GroupMembers: "Alice, Bob",
+          Surface: "discord",
+        },
+        {},
+        makeCfg(home),
+      );
+
+      expect(runEmbeddedPiAgent).toHaveBeenCalledOnce();
+      const extraSystemPrompt =
+        vi.mocked(runEmbeddedPiAgent).mock.calls.at(-1)?.[0]
+          ?.extraSystemPrompt ?? "";
+      expect(extraSystemPrompt).toBe(
+        'You are replying inside the Discord group "Release Squad". Group members: Alice, Bob. Activation: trigger-only (you are invoked only when explicitly mentioned; recent context may be included). Address the specific sender noted in the message context.',
+      );
+    });
+  });
+
+  it("keeps WhatsApp labeling for WhatsApp group chats", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      await getReplyFromConfig(
+        {
+          Body: "ping",
+          From: "123@g.us",
+          To: "+1999",
+          ChatType: "group",
+          GroupSubject: "Ops",
+          Surface: "whatsapp",
+        },
+        {},
+        makeCfg(home),
+      );
+
+      expect(runEmbeddedPiAgent).toHaveBeenCalledOnce();
+      const extraSystemPrompt =
+        vi.mocked(runEmbeddedPiAgent).mock.calls.at(-1)?.[0]
+          ?.extraSystemPrompt ?? "";
+      expect(extraSystemPrompt).toBe(
+        'You are replying inside the WhatsApp group "Ops". Activation: trigger-only (you are invoked only when explicitly mentioned; recent context may be included). Address the specific sender noted in the message context.',
+      );
+    });
+  });
+
+  it("labels Telegram groups using their own surface", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      await getReplyFromConfig(
+        {
+          Body: "ping",
+          From: "group:tg",
+          To: "+1777",
+          ChatType: "group",
+          GroupSubject: "Dev Chat",
+          Surface: "telegram",
+        },
+        {},
+        makeCfg(home),
+      );
+
+      expect(runEmbeddedPiAgent).toHaveBeenCalledOnce();
+      const extraSystemPrompt =
+        vi.mocked(runEmbeddedPiAgent).mock.calls.at(-1)?.[0]
+          ?.extraSystemPrompt ?? "";
+      expect(extraSystemPrompt).toBe(
+        'You are replying inside the Telegram group "Dev Chat". Activation: trigger-only (you are invoked only when explicitly mentioned; recent context may be included). Address the specific sender noted in the message context.',
+      );
     });
   });
 });
