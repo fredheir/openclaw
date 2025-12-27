@@ -76,6 +76,7 @@ import { isVerbose } from "../globals.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { startGatewayBonjourAdvertiser } from "../infra/bonjour.js";
 import { startNodeBridgeServer } from "../infra/bridge/server.js";
+import { resolveCanvasHostUrl } from "../infra/canvas-host-url.js";
 import { GatewayLockError } from "../infra/gateway-lock.js";
 import {
   getLastHeartbeatEvent,
@@ -91,6 +92,7 @@ import {
   approveNodePairing,
   listNodePairing,
   rejectNodePairing,
+  renamePairedNode,
   requestNodePairing,
   verifyNodeToken,
 } from "../infra/node-pairing.js";
@@ -379,6 +381,7 @@ import {
   validateNodePairRejectParams,
   validateNodePairRequestParams,
   validateNodePairVerifyParams,
+  validateNodeRenameParams,
   validateProvidersStatusParams,
   validateRequestFrame,
   validateSendParams,
@@ -485,6 +488,7 @@ const METHODS = [
   "node.pair.approve",
   "node.pair.reject",
   "node.pair.verify",
+  "node.rename",
   "node.list",
   "node.describe",
   "node.invoke",
@@ -609,39 +613,6 @@ function buildSnapshot(): Snapshot {
 const MAX_PAYLOAD_BYTES = 512 * 1024; // cap incoming frame size
 const MAX_BUFFERED_BYTES = 1.5 * 1024 * 1024; // per-connection send buffer limit
 
-function deriveCanvasHostUrl(
-  req: IncomingMessage | undefined,
-  canvasPort: number | undefined,
-  hostOverride?: string,
-) {
-  if (!req || !canvasPort) return undefined;
-  const hostHeader = req.headers.host?.trim();
-  const forwardedProto =
-    typeof req.headers["x-forwarded-proto"] === "string"
-      ? req.headers["x-forwarded-proto"]
-      : Array.isArray(req.headers["x-forwarded-proto"])
-        ? req.headers["x-forwarded-proto"][0]
-        : undefined;
-  const scheme = forwardedProto === "https" ? "https" : "http";
-
-  let host = (hostOverride ?? "").trim();
-  if (host === "0.0.0.0" || host === "::") host = "";
-  if (!host && hostHeader) {
-    try {
-      const parsed = new URL(`http://${hostHeader}`);
-      host = parsed.hostname;
-    } catch {
-      host = "";
-    }
-  }
-  if (!host) {
-    host = req.socket?.localAddress?.trim() ?? "";
-  }
-  if (!host) return undefined;
-
-  const formattedHost = host.includes(":") ? `[${host}]` : host;
-  return `${scheme}://${formattedHost}:${canvasPort}`;
-}
 const MAX_CHAT_HISTORY_MESSAGES_BYTES = 6 * 1024 * 1024; // keep history responses comfortably under client WS limits
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const TICK_INTERVAL_MS = 30_000;
@@ -1829,6 +1800,17 @@ export async function startGatewayServer(
 
   const startWhatsAppProvider = async () => {
     if (whatsappTask) return;
+    const cfg = loadConfig();
+    if (cfg.web?.enabled === false) {
+      whatsappRuntime = {
+        ...whatsappRuntime,
+        running: false,
+        connected: false,
+        lastError: "disabled",
+      };
+      logWhatsApp.info("skipping provider start (web.enabled=false)");
+      return;
+    }
     if (!(await webAuthExists())) {
       whatsappRuntime = {
         ...whatsappRuntime,
@@ -1897,6 +1879,15 @@ export async function startGatewayServer(
   const startTelegramProvider = async () => {
     if (telegramTask) return;
     const cfg = loadConfig();
+    if (cfg.telegram?.enabled === false) {
+      telegramRuntime = {
+        ...telegramRuntime,
+        running: false,
+        lastError: "disabled",
+      };
+      logTelegram.info("skipping provider start (telegram.enabled=false)");
+      return;
+    }
     const telegramToken =
       process.env.TELEGRAM_BOT_TOKEN ?? cfg.telegram?.botToken ?? "";
     if (!telegramToken.trim()) {
@@ -1981,6 +1972,15 @@ export async function startGatewayServer(
   const startDiscordProvider = async () => {
     if (discordTask) return;
     const cfg = loadConfig();
+    if (cfg.discord?.enabled === false) {
+      discordRuntime = {
+        ...discordRuntime,
+        running: false,
+        lastError: "disabled",
+      };
+      logDiscord.info("skipping provider start (discord.enabled=false)");
+      return;
+    }
     const discordToken =
       process.env.DISCORD_BOT_TOKEN ?? cfg.discord?.token ?? "";
     if (!discordToken.trim()) {
@@ -2057,8 +2057,8 @@ export async function startGatewayServer(
 
   const startProviders = async () => {
     await startWhatsAppProvider();
-    await startTelegramProvider();
     await startDiscordProvider();
+    await startTelegramProvider();
   };
 
   const broadcast = (
@@ -3175,6 +3175,13 @@ export async function startGatewayServer(
 
   const machineDisplayName = await getMachineDisplayName();
   const canvasHostPortForBridge = canvasHostServer?.port;
+  const canvasHostHostForBridge =
+    canvasHostServer &&
+    bridgeHost &&
+    bridgeHost !== "0.0.0.0" &&
+    bridgeHost !== "::"
+      ? bridgeHost
+      : undefined;
 
   if (bridgeEnabled && bridgePort > 0 && bridgeHost) {
     try {
@@ -3183,6 +3190,7 @@ export async function startGatewayServer(
         port: bridgePort,
         serverName: machineDisplayName,
         canvasHostPort: canvasHostPortForBridge,
+        canvasHostHost: canvasHostHostForBridge,
         onRequest: (nodeId, req) => handleBridgeRequest(nodeId, req),
         onAuthenticated: async (node) => {
           const host = node.displayName?.trim() || node.nodeId;
@@ -3482,11 +3490,13 @@ export async function startGatewayServer(
       bridgeHost && bridgeHost !== "0.0.0.0" && bridgeHost !== "::"
         ? bridgeHost
         : undefined;
-    const canvasHostUrl = deriveCanvasHostUrl(
-      upgradeReq,
-      canvasHostPortForWs,
-      canvasHostServer ? canvasHostOverride : undefined,
-    );
+    const canvasHostUrl = resolveCanvasHostUrl({
+      canvasPort: canvasHostPortForWs,
+      hostOverride: canvasHostServer ? canvasHostOverride : undefined,
+      requestHost: upgradeReq.headers.host,
+      forwardedProto: upgradeReq.headers["x-forwarded-proto"],
+      localAddress: upgradeReq.socket?.localAddress,
+    });
     logWs("in", "open", { connId, remoteAddr });
     const isWebchatConnect = (params: ConnectParams | null | undefined) =>
       params?.client?.mode === "webchat" ||
@@ -5401,6 +5411,59 @@ export async function startGatewayServer(
               }
               break;
             }
+            case "node.rename": {
+              const params = (req.params ?? {}) as Record<string, unknown>;
+              if (!validateNodeRenameParams(params)) {
+                respond(
+                  false,
+                  undefined,
+                  errorShape(
+                    ErrorCodes.INVALID_REQUEST,
+                    `invalid node.rename params: ${formatValidationErrors(validateNodeRenameParams.errors)}`,
+                  ),
+                );
+                break;
+              }
+              const { nodeId, displayName } = params as {
+                nodeId: string;
+                displayName: string;
+              };
+              try {
+                const trimmed = displayName.trim();
+                if (!trimmed) {
+                  respond(
+                    false,
+                    undefined,
+                    errorShape(
+                      ErrorCodes.INVALID_REQUEST,
+                      "displayName required",
+                    ),
+                  );
+                  break;
+                }
+                const updated = await renamePairedNode(nodeId, trimmed);
+                if (!updated) {
+                  respond(
+                    false,
+                    undefined,
+                    errorShape(ErrorCodes.INVALID_REQUEST, "unknown nodeId"),
+                  );
+                  break;
+                }
+                respond(
+                  true,
+                  { nodeId: updated.nodeId, displayName: updated.displayName },
+                  undefined,
+                );
+              } catch (err) {
+                respond(
+                  false,
+                  undefined,
+                  errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)),
+                );
+              }
+              break;
+            }
             case "node.list": {
               const params = (req.params ?? {}) as Record<string, unknown>;
               if (!validateNodeListParams(params)) {
@@ -6066,14 +6129,20 @@ export async function startGatewayServer(
   }
 
   // Start clawd browser control server (unless disabled via config).
-  void startBrowserControlServerIfEnabled().catch((err) => {
+  try {
+    await startBrowserControlServerIfEnabled();
+  } catch (err) {
     logBrowser.error(`server failed to start: ${String(err)}`);
-  });
+  }
 
-  // Launch configured providers (WhatsApp Web, Telegram) so gateway replies via the
+  // Launch configured providers (WhatsApp Web, Discord, Telegram) so gateway replies via the
   // surface the message came from. Tests can opt out via CLAWDIS_SKIP_PROVIDERS.
   if (process.env.CLAWDIS_SKIP_PROVIDERS !== "1") {
-    void startProviders();
+    try {
+      await startProviders();
+    } catch (err) {
+      logProviders.error(`provider startup failed: ${String(err)}`);
+    }
   } else {
     logProviders.info("skipping provider start (CLAWDIS_SKIP_PROVIDERS=1)");
   }

@@ -105,6 +105,48 @@ Controls how inbound messages behave when an agent run is already active.
 }
 ```
 
+### `web` (WhatsApp web provider)
+
+WhatsApp runs through the gateway’s web provider. It starts automatically when a linked session exists.
+Set `web.enabled: false` to keep it off by default.
+
+```json5
+{
+  web: {
+    enabled: true,
+    heartbeatSeconds: 60,
+    reconnect: {
+      initialMs: 2000,
+      maxMs: 120000,
+      factor: 1.4,
+      jitter: 0.2,
+      maxAttempts: 0
+    }
+  }
+}
+```
+
+### `telegram` (bot transport)
+
+Clawdis reads `TELEGRAM_BOT_TOKEN` or `telegram.botToken` to start the provider.
+Set `telegram.enabled: false` to disable automatic startup.
+
+```json5
+{
+  telegram: {
+    enabled: true,
+    botToken: "your-bot-token",
+    requireMention: true,
+    allowFrom: ["123456789"],
+    mediaMaxMb: 5,
+    proxy: "socks5://localhost:9050",
+    webhookUrl: "https://example.com/telegram-webhook",
+    webhookSecret: "secret",
+    webhookPath: "/telegram-webhook"
+  }
+}
+```
+
 ### `discord` (bot transport)
 
 Configure the Discord bot by setting the bot token and optional gating:
@@ -112,6 +154,7 @@ Configure the Discord bot by setting the bot token and optional gating:
 ```json5
 {
   discord: {
+    enabled: true,
     token: "your-bot-token",
     allowFrom: ["discord:1234567890", "*"], // optional DM allowlist (user ids)
     guildAllowFrom: {
@@ -124,7 +167,7 @@ Configure the Discord bot by setting the bot token and optional gating:
 }
 ```
 
-Clawdis reads `DISCORD_BOT_TOKEN` or `discord.token` to start the provider. Use `user:<id>` (DM) or `channel:<id>` (guild channel) when specifying delivery targets for cron/CLI commands.
+Clawdis reads `DISCORD_BOT_TOKEN` or `discord.token` to start the provider (unless `discord.enabled` is `false`). Use `user:<id>` (DM) or `channel:<id>` (guild channel) when specifying delivery targets for cron/CLI commands.
 
 ### `agent.workspace`
 
@@ -157,6 +200,7 @@ Controls inbound/outbound prefixes and timestamps.
 Controls the embedded agent runtime (model/thinking/verbose/timeouts).
 `allowedModels` lets `/model` list/filter and enforce a per-session allowlist
 (omit to show the full catalog).
+`modelAliases` adds short names for `/model` (alias -> provider/model).
 
 ```json5
 {
@@ -166,6 +210,10 @@ Controls the embedded agent runtime (model/thinking/verbose/timeouts).
       "anthropic/claude-opus-4-5",
       "anthropic/claude-sonnet-4-1"
     ],
+    modelAliases: {
+      Opus: "anthropic/claude-opus-4-5",
+      Sonnet: "anthropic/claude-sonnet-4-1"
+    },
     thinkingDefault: "low",
     verboseDefault: "off",
     timeoutSeconds: 600,
@@ -186,6 +234,7 @@ Controls the embedded agent runtime (model/thinking/verbose/timeouts).
 ```
 
 `agent.model` should be set as `provider/model` (e.g. `anthropic/claude-opus-4-5`).
+If `modelAliases` is configured, you may also use the alias key (e.g. `Opus`).
 If you omit the provider, CLAWDIS currently assumes `anthropic` as a temporary
 deprecation fallback.
 
@@ -246,6 +295,53 @@ Select the model via `agent.model` (provider/model).
   }
 }
 ```
+
+### Local models (LM Studio) — recommended setup
+
+Best current local setup (what we’re running): **MiniMax M2.1** on a beefy Mac Studio
+via **LM Studio** using the **Responses API**.
+
+```json5
+{
+  agent: {
+    model: "Minimax",
+    allowedModels: [
+      "anthropic/claude-opus-4-5",
+      "lmstudio/minimax-m2.1-gs32"
+    ],
+    modelAliases: {
+      Opus: "anthropic/claude-opus-4-5",
+      Minimax: "lmstudio/minimax-m2.1-gs32"
+    }
+  },
+  models: {
+    mode: "merge",
+    providers: {
+      lmstudio: {
+        baseUrl: "http://127.0.0.1:1234/v1",
+        apiKey: "lmstudio",
+        api: "openai-responses",
+        models: [
+          {
+            id: "minimax-m2.1-gs32",
+            name: "MiniMax M2.1 GS32",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 196608,
+            maxTokens: 8192
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Notes:
+- LM Studio must have the model loaded and the local server enabled (default URL above).
+- Responses API enables clean reasoning/output separation; WhatsApp sees only final text.
+- Adjust `contextWindow`/`maxTokens` if your LM Studio context length differs.
 
 Notes:
 - Supported APIs: `openai-completions`, `openai-responses`, `anthropic-messages`,

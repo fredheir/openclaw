@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 
+import { resolveCanvasHostUrl } from "../canvas-host-url.js";
 import {
   getPairedNode,
   listNodePairing,
@@ -138,6 +139,7 @@ export type NodeBridgeServerOpts = {
   port: number; // 0 = ephemeral
   pairingBaseDir?: string;
   canvasHostPort?: number;
+  canvasHostHost?: string;
   onEvent?: (nodeId: string, evt: BridgeEventFrame) => Promise<void> | void;
   onRequest?: (
     nodeId: string,
@@ -188,12 +190,12 @@ export async function startNodeBridgeServer(
       : os.hostname();
 
   const buildCanvasHostUrl = (socket: net.Socket) => {
-    const port = opts.canvasHostPort;
-    if (!port) return undefined;
-    const host = socket.localAddress?.trim();
-    if (!host) return undefined;
-    const formatted = host.includes(":") ? `[${host}]` : host;
-    return `http://${formatted}:${port}`;
+    return resolveCanvasHostUrl({
+      canvasPort: opts.canvasHostPort,
+      hostOverride: opts.canvasHostHost,
+      localAddress: socket.localAddress,
+      scheme: "http",
+    });
   };
 
   type ConnectionState = {

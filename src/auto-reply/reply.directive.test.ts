@@ -4,6 +4,21 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { loadModelCatalog } from "../agents/model-catalog.js";
+import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
+import {
+  loadSessionStore,
+  resolveSessionKey,
+  saveSessionStore,
+} from "../config/sessions.js";
+import { drainSystemEvents } from "../infra/system-events.js";
+import {
+  extractQueueDirective,
+  extractThinkDirective,
+  extractVerboseDirective,
+  getReplyFromConfig,
+} from "./reply.js";
+
 vi.mock("../agents/pi-embedded.js", () => ({
   abortEmbeddedPiRun: vi.fn().mockReturnValue(false),
   runEmbeddedPiAgent: vi.fn(),
@@ -14,20 +29,6 @@ vi.mock("../agents/pi-embedded.js", () => ({
 vi.mock("../agents/model-catalog.js", () => ({
   loadModelCatalog: vi.fn(),
 }));
-
-import { loadModelCatalog } from "../agents/model-catalog.js";
-import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
-import {
-  loadSessionStore,
-  resolveSessionKey,
-  saveSessionStore,
-} from "../config/sessions.js";
-import {
-  extractQueueDirective,
-  extractThinkDirective,
-  extractVerboseDirective,
-  getReplyFromConfig,
-} from "./reply.js";
 
 async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "clawdis-reply-"));
@@ -389,6 +390,68 @@ describe("directive parsing", () => {
       const entry = store.main;
       expect(entry.modelOverride).toBe("gpt-4.1-mini");
       expect(entry.providerOverride).toBe("openai");
+      expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  it("supports model aliases on /model directive", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockReset();
+      const storePath = path.join(home, "sessions.json");
+
+      const res = await getReplyFromConfig(
+        { Body: "/model Opus", From: "+1222", To: "+1222" },
+        {},
+        {
+          agent: {
+            model: "openai/gpt-4.1-mini",
+            workspace: path.join(home, "clawd"),
+            allowedModels: ["openai/gpt-4.1-mini", "anthropic/claude-opus-4-5"],
+            modelAliases: {
+              Opus: "anthropic/claude-opus-4-5",
+            },
+          },
+          session: { store: storePath },
+        },
+      );
+
+      const text = Array.isArray(res) ? res[0]?.text : res?.text;
+      expect(text).toContain("Model set to Opus");
+      expect(text).toContain("anthropic/claude-opus-4-5");
+      const store = loadSessionStore(storePath);
+      const entry = store.main;
+      expect(entry.modelOverride).toBe("claude-opus-4-5");
+      expect(entry.providerOverride).toBe("anthropic");
+      expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  it("queues a system event when switching models", async () => {
+    await withTempHome(async (home) => {
+      drainSystemEvents();
+      vi.mocked(runEmbeddedPiAgent).mockReset();
+      const storePath = path.join(home, "sessions.json");
+
+      await getReplyFromConfig(
+        { Body: "/model Opus", From: "+1222", To: "+1222" },
+        {},
+        {
+          agent: {
+            model: "openai/gpt-4.1-mini",
+            workspace: path.join(home, "clawd"),
+            allowedModels: ["openai/gpt-4.1-mini", "anthropic/claude-opus-4-5"],
+            modelAliases: {
+              Opus: "anthropic/claude-opus-4-5",
+            },
+          },
+          session: { store: storePath },
+        },
+      );
+
+      const events = drainSystemEvents();
+      expect(events).toContain(
+        "Model switched to Opus (anthropic/claude-opus-4-5).",
+      );
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });

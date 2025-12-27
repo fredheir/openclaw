@@ -9,8 +9,9 @@ import SwiftUI
 private let webChatSwiftLogger = Logger(subsystem: "com.steipete.clawdis", category: "WebChatSwiftUI")
 
 private enum WebChatSwiftUILayout {
-    static let windowSize = NSSize(width: 1120, height: 840)
+    static let windowSize = NSSize(width: 500, height: 840)
     static let panelSize = NSSize(width: 480, height: 640)
+    static let windowMinSize = NSSize(width: 480, height: 360)
     static let anchorPadding: CGFloat = 8
 }
 
@@ -167,6 +168,7 @@ final class WebChatSwiftUIWindowController {
 
     func show() {
         guard let window else { return }
+        self.ensureWindowSize()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.onVisibilityChanged?(true)
@@ -261,7 +263,7 @@ final class WebChatSwiftUIWindowController {
                 styleMask: [.titled, .closable, .resizable, .miniaturizable],
                 backing: .buffered,
                 defer: false)
-            window.title = "Clawdis Chat (SwiftUI)"
+            window.title = "Clawdis Chat"
             window.contentViewController = contentViewController
             window.isReleasedWhenClosed = false
             window.titleVisibility = .visible
@@ -270,7 +272,7 @@ final class WebChatSwiftUIWindowController {
             window.isOpaque = false
             window.center()
             WindowPlacement.ensureOnScreen(window: window, defaultSize: WebChatSwiftUILayout.windowSize)
-            window.minSize = NSSize(width: 880, height: 680)
+            window.minSize = WebChatSwiftUILayout.windowMinSize
             window.contentView?.wantsLayer = true
             window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
             return window
@@ -311,18 +313,20 @@ final class WebChatSwiftUIWindowController {
         effectView.material = .sidebar
         effectView.blendingMode = .behindWindow
         effectView.state = .active
-        effectView.translatesAutoresizingMaskIntoConstraints = true
-        effectView.autoresizingMask = [.width, .height]
         effectView.wantsLayer = true
         effectView.layer?.cornerCurve = .continuous
         let cornerRadius: CGFloat = switch presentation {
         case .panel:
             16
         case .window:
-            12
+            0
         }
         effectView.layer?.cornerRadius = cornerRadius
         effectView.layer?.masksToBounds = true
+
+        effectView.translatesAutoresizingMaskIntoConstraints = true
+        effectView.autoresizingMask = [.width, .height]
+        let rootView = effectView
 
         hosting.view.translatesAutoresizingMaskIntoConstraints = false
         hosting.view.wantsLayer = true
@@ -330,7 +334,7 @@ final class WebChatSwiftUIWindowController {
 
         controller.addChild(hosting)
         effectView.addSubview(hosting.view)
-        controller.view = effectView
+        controller.view = rootView
 
         NSLayoutConstraint.activate([
             hosting.view.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
@@ -340,5 +344,15 @@ final class WebChatSwiftUIWindowController {
         ])
 
         return controller
+    }
+
+    private func ensureWindowSize() {
+        guard case .window = self.presentation, let window else { return }
+        let current = window.frame.size
+        let min = WebChatSwiftUILayout.windowMinSize
+        if current.width < min.width || current.height < min.height {
+            let frame = WindowPlacement.centeredFrame(size: WebChatSwiftUILayout.windowSize)
+            window.setFrame(frame, display: false)
+        }
     }
 }

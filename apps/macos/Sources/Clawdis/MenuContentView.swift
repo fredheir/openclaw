@@ -18,6 +18,7 @@ struct MenuContent: View {
     @State private var availableMics: [AudioInputDevice] = []
     @State private var loadingMics = false
     @State private var browserControlEnabled = true
+    @AppStorage(cameraEnabledKey) private var cameraEnabled: Bool = false
 
     init(state: AppState, updater: UpdaterProviding?) {
         self._state = Bindable(wrappedValue: state)
@@ -37,48 +38,12 @@ struct MenuContent: View {
 
             Divider()
             Toggle(isOn: self.heartbeatsBinding) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Send Heartbeats")
+                HStack(spacing: 8) {
+                    Label("Send Heartbeats", systemImage: "waveform.path.ecg")
+                    Spacer(minLength: 0)
                     self.statusLine(label: self.heartbeatStatus.label, color: self.heartbeatStatus.color)
                 }
             }
-            Toggle(isOn: self.voiceWakeBinding) { Text("Voice Wake") }
-                .disabled(!voiceWakeSupported)
-                .opacity(voiceWakeSupported ? 1 : 0.5)
-            if self.showVoiceWakeMicPicker {
-                self.voiceWakeMicMenu
-            }
-            Divider()
-            Button("Open Chat") {
-                Task { @MainActor in
-                    let sessionKey = await WebChatManager.shared.preferredSessionKey()
-                    WebChatManager.shared.show(sessionKey: sessionKey)
-                }
-            }
-            Button("Open Dashboard") {
-                Task { @MainActor in
-                    await self.openDashboard()
-                }
-            }
-            Toggle(isOn: Binding(get: { self.state.canvasEnabled }, set: { self.state.canvasEnabled = $0 })) {
-                Text("Allow Canvas")
-            }
-            .onChange(of: self.state.canvasEnabled) { _, enabled in
-                if !enabled {
-                    CanvasManager.shared.hideAll()
-                }
-            }
-            if self.state.canvasEnabled {
-                Button(self.state.canvasPanelVisible ? "Close Canvas" : "Open Canvas") {
-                    if self.state.canvasPanelVisible {
-                        CanvasManager.shared.hideAll()
-                    } else {
-                        // Don't force a navigation on re-open: preserve the current web view state.
-                        _ = try? CanvasManager.shared.show(sessionKey: "main", path: nil)
-                    }
-                }
-            }
-            Divider()
             Toggle(
                 isOn: Binding(
                     get: { self.browserControlEnabled },
@@ -86,7 +51,56 @@ struct MenuContent: View {
                         self.browserControlEnabled = enabled
                         ClawdisConfigFile.setBrowserControlEnabled(enabled)
                     })) {
-                Text("Browser Control")
+                Label("Browser Control", systemImage: "globe")
+            }
+            Toggle(isOn: self.$cameraEnabled) {
+                Label("Allow Camera", systemImage: "camera")
+            }
+            Toggle(isOn: Binding(get: { self.state.canvasEnabled }, set: { self.state.canvasEnabled = $0 })) {
+                Label("Allow Canvas", systemImage: "rectangle.and.pencil.and.ellipsis")
+            }
+            .onChange(of: self.state.canvasEnabled) { _, enabled in
+                if !enabled {
+                    CanvasManager.shared.hideAll()
+                }
+            }
+            Toggle(isOn: self.voiceWakeBinding) {
+                Label("Voice Wake", systemImage: "mic.fill")
+            }
+                .disabled(!voiceWakeSupported)
+                .opacity(voiceWakeSupported ? 1 : 0.5)
+            if self.showVoiceWakeMicPicker {
+                self.voiceWakeMicMenu
+            }
+            Divider()
+            Button {
+                Task { @MainActor in
+                    await self.openDashboard()
+                }
+            } label: {
+                Label("Open Dashboard", systemImage: "gauge")
+            }
+            Button {
+                Task { @MainActor in
+                    let sessionKey = await WebChatManager.shared.preferredSessionKey()
+                    WebChatManager.shared.show(sessionKey: sessionKey)
+                }
+            } label: {
+                Label("Open Chat", systemImage: "bubble.left.and.bubble.right")
+            }
+            if self.state.canvasEnabled {
+                Button {
+                    if self.state.canvasPanelVisible {
+                        CanvasManager.shared.hideAll()
+                    } else {
+                        // Don't force a navigation on re-open: preserve the current web view state.
+                        _ = try? CanvasManager.shared.show(sessionKey: "main", path: nil)
+                    }
+                } label: {
+                    Label(
+                        self.state.canvasPanelVisible ? "Close Canvas" : "Open Canvas",
+                        systemImage: "rectangle.inset.filled.on.rectangle")
+                }
             }
             Divider()
             Button("Settings…") { self.open(tab: .general) }

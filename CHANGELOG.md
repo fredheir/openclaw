@@ -1,13 +1,15 @@
 # Changelog
 
-## 2.0.0-beta3 — Unreleased (2025-12-25)
+## 2.0.0-beta3 — Unreleased (2025-12-26)
 
 ### Highlights
-- First-class Clawdis tools (browser, canvas, nodes, cron) replace the old `clawdis-*` skills; tool schemas are now injected directly into the agent runtime (including selector-based browser actions).
+- First-class Clawdis tools (browser, canvas, nodes, cron) replace the old `clawdis-*` skills; tool schemas are now injected directly into the agent runtime.
 - Per-session model selection + custom model providers: `models.providers` merges into `~/.clawdis/agent/models.json` (merge/replace modes) for LiteLLM, local OpenAI-compatible servers, Anthropic proxies, etc.
 - Group chat activation modes: per-group `/activation mention|always` command with status visibility.
+- Discord bot transport for DMs and guild text channels, with allowlists + mention gating.
 - Gateway webhooks: external `wake` and isolated `agent` hooks with dedicated token auth.
 - Hook mappings + Gmail Pub/Sub helper (`clawdis hooks gmail setup/run`) with auto-renew + Tailscale Funnel support.
+- Command queue modes + per-session overrides (`/queue ...`) and new `agent.maxConcurrent` cap for safe parallelism across sessions.
 - Background bash tasks: `bash` auto-yields after 20s (or on demand) with a `process` tool to list/poll/log/write/kill sessions.
 - Gateway in-process restart: `clawdis_gateway` tool action triggers a SIGUSR1 restart without needing a supervisor.
 
@@ -15,14 +17,17 @@
 - Config refactor: `inbound.*` removed; use top-level `routing` (allowlists + group rules + transcription), `messages` (prefixes/timestamps), and `session` (scoping/store/mainKey). No legacy keys read.
 - Heartbeat config moved to `agent.heartbeat`: set `every: "30m"` (duration string) and optional `model`. `agent.heartbeatMinutes` is removed, and heartbeats are disabled unless `agent.heartbeat.every` is set.
 - Heartbeats now run via the gateway runner (main session) and deliver to the last used channel by default. WhatsApp reply-heartbeat behavior is removed; use `agent.heartbeat.target`/`to` (or `target: "none"`) to control delivery.
+- Browser `act` no longer accepts CSS `selector`; use `snapshot` refs (default `ai`) or `evaluate` as an escape hatch.
 
 ### Fixes
 - Heartbeat replies now strip repeated `HEARTBEAT_OK` tails to avoid accidental “OK OK” spam.
+- Heartbeat delivery now uses the last non-empty payload, preventing tool preambles from swallowing the final reply.
 - Heartbeat failure logs now include the error reason instead of `[object Object]`.
 - Duration strings now accept `h` (hours) where durations are parsed (e.g., heartbeat intervals).
 - WhatsApp inbound now normalizes more wrapper types so quoted reply bodies are extracted reliably.
 - WhatsApp send now preserves existing JIDs (including group `@g.us`) instead of coercing to `@s.whatsapp.net`. (Thanks @arun-8687.)
 - Telegram/WhatsApp: reply context stays in `Body`/`ReplyTo*`, but outbound replies no longer thread to the original message. (Thanks @joshp123 for the PR and follow-up question.)
+- Suppressed libsignal session cleanup spam from console logs unless verbose mode is enabled.
 - WhatsApp web creds persistence hardened; credentials are restored before auth checks and QR login auto-restarts if it stalls.
 - Group chats now honor `routing.groupChat.requireMention=false` as the default activation when no per-group override exists.
 - Gateway auth no longer supports PAM/system mode; use token or shared password.
@@ -34,6 +39,9 @@
 - Streamed `<think>` segments are stripped before partial replies are emitted.
 - System prompt now tags allowlisted owner numbers as the user identity to avoid mistaken “friend” assumptions.
 - LM Studio/Ollama replies now require <final> tags; streaming ignores content until <final> begins.
+- LM Studio responses API: tools payloads no longer include `strict: null`, and LM Studio no longer gets forced `<think>/<final>` tags.
+- Identity emoji no longer auto-prefixes replies (set `messages.responsePrefix` explicitly if desired).
+- Model switches now enqueue a system event so the next run knows the active model.
 - `process log` pagination is now line-based (omit `offset` to grab the last N lines).
 - macOS WebChat: assistant bubbles now update correctly when toggling light/dark mode.
 - macOS: avoid spawning a duplicate gateway process when an external listener already exists.
@@ -42,15 +50,39 @@
 - Canvas defaults/A2UI auto-nav aligned; debug status overlay centered; redundant await removed in `CanvasManager`.
 - Gateway launchd loop fixed by removing redundant `kickstart -k`.
 - CLI now hints when Peekaboo is unauthorized.
+- WhatsApp web inbox listeners now clean up on close to avoid duplicate handlers.
+- Gateway startup now brings up browser control before external providers; WhatsApp/Telegram/Discord auto-start can be disabled with `web.enabled`, `telegram.enabled`, or `discord.enabled`.
+
+### Providers & Routing
+- New Discord provider for DMs + guild text channels with allowlists and mention-gated replies by default.
+- `routing.queue` now controls queue vs interrupt behavior globally + per surface (defaults: WhatsApp/Telegram interrupt, Discord/WebChat queue).
+- `/queue <mode>` supports one-shot or per-session overrides; `/queue reset|default` clears overrides.
+- `agent.maxConcurrent` caps global parallel runs while keeping per-session serialization.
 
 ### macOS app
 - Update-ready state surfaced in the menu; menu sections regrouped with session submenus.
+- Menu bar now shows a dedicated Nodes section under Context with inline rows, overflow submenu, and iconized actions.
+- Nodes now expose consistent inline details with per-node submenus for quick copy of key fields.
+- Node rows now show compact app versions (build numbers moved to submenus) and offer SSH launch from Bonjour when available.
+- Menu actions are grouped below toggles; Open Canvas hides when disabled and Voice Wake now anchors the mic picker.
+- Connections now include Discord provider status + configuration UI.
+- Menu bar gains an Allow Camera toggle alongside Canvas.
 - Session list polish: sleeping/disconnected/error states, usage bar restored, padding + bar sizing tuned, syncing menu removed, header hidden when disconnected.
 - Chat UI polish: tool call cards + merged tool results, glass background, tighter composer spacing, visual effect host tweaks.
 - OAuth storage moved; legacy session syncing metadata removed.
+- Remote SSH tunnels now get health checks; Debug → Ports highlights unhealthy tunnels and offers Reset SSH tunnel.
+- Menu bar session/node sections no longer reflow while open, keeping hover highlights aligned.
+- Menu hover highlights now span the full width (including submenu arrows).
+- Menu session rows now refresh while open without width changes (no more stuck “Loading sessions…”).
+- Menu width no longer grows on hover when moving the mouse across rows.
+- macOS node timeouts now share a single async timeout helper for consistent behavior.
+- WebChat window defaults tightened (narrower width, edge-to-edge layout) and the SwiftUI tag removed from the title.
 
 ### Nodes & Canvas
 - Debug status overlay gated and toggleable on macOS/iOS/Android nodes.
+- Gateway now derives the canvas host URL via a shared helper for bridge + WS handshakes (avoids loopback pitfalls).
+- `canvas a2ui push` validates JSONL with line errors, rejects v0.9 payloads, and supports `--text` quick renders.
+- `nodes rename` lets you override paired node display names without editing JSON.
 - Android scaffold asset cleanup; iOS canvas/voice wake adjustments.
 
 ### Logging & Observability
@@ -62,8 +94,10 @@
 
 ### Build, Dev, Docs
 - Notarization flow added for macOS release artifacts; packaging scripts updated.
+- macOS signing auto-selects Developer ID → Apple Distribution → Apple Development; no ad-hoc fallback.
 - Added type-aware oxlint; docs list resolves from cwd; formatting/lint cleanup and dependency bumps (Peekaboo).
-- Docs refreshed for tools, custom model providers, group activation commands, logging, restart semantics, release notes, GitHub pages CTAs, and npm pitfalls.
+- Docs refreshed for tools, custom model providers, Discord, queue/routing, group activation commands, logging, restart semantics, release notes, GitHub pages CTAs, and npm pitfalls.
+- `pnpm build` now skips A2UI bundling for faster builds (run `pnpm canvas:a2ui:bundle` when needed).
 
 ### Tests
 - Coverage added for models config merging, WhatsApp reply context, QR login flows, auto-reply behavior, and gateway SIGTERM timeouts.

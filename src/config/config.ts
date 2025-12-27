@@ -42,6 +42,8 @@ export type WebReconnectConfig = {
 };
 
 export type WebConfig = {
+  /** If false, do not start the WhatsApp web provider. Default: true. */
+  enabled?: boolean;
   heartbeatSeconds?: number;
   reconnect?: WebReconnectConfig;
 };
@@ -126,6 +128,8 @@ export type HooksConfig = {
 };
 
 export type TelegramConfig = {
+  /** If false, do not start the Telegram provider. Default: true. */
+  enabled?: boolean;
   botToken?: string;
   requireMention?: boolean;
   allowFrom?: Array<string | number>;
@@ -137,6 +141,8 @@ export type TelegramConfig = {
 };
 
 export type DiscordConfig = {
+  /** If false, do not start the Discord provider. Default: true. */
+  enabled?: boolean;
   token?: string;
   allowFrom?: Array<string | number>;
   guildAllowFrom?: {
@@ -346,6 +352,8 @@ export type ClawdisConfig = {
     workspace?: string;
     /** Optional allowlist for /model (provider/model or model-only). */
     allowedModels?: string[];
+    /** Optional model aliases for /model (alias -> provider/model). */
+    modelAliases?: Record<string, string>;
     /** Optional display-only context window override (used for % in status UIs). */
     contextTokens?: number;
     /** Default thinking level when no /think directive is present. */
@@ -671,6 +679,7 @@ const ClawdisSchema = z.object({
       model: z.string().optional(),
       workspace: z.string().optional(),
       allowedModels: z.array(z.string()).optional(),
+      modelAliases: z.record(z.string(), z.string()).optional(),
       contextTokens: z.number().int().positive().optional(),
       thinkingDefault: z
         .union([
@@ -720,6 +729,7 @@ const ClawdisSchema = z.object({
     .optional(),
   web: z
     .object({
+      enabled: z.boolean().optional(),
       heartbeatSeconds: z.number().int().positive().optional(),
       reconnect: z
         .object({
@@ -734,6 +744,7 @@ const ClawdisSchema = z.object({
     .optional(),
   telegram: z
     .object({
+      enabled: z.boolean().optional(),
       botToken: z.string().optional(),
       requireMention: z.boolean().optional(),
       allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
@@ -746,6 +757,7 @@ const ClawdisSchema = z.object({
     .optional(),
   discord: z
     .object({
+      enabled: z.boolean().optional(),
       token: z.string().optional(),
       allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
       guildAllowFrom: z
@@ -871,20 +883,13 @@ function applyIdentityDefaults(cfg: ClawdisConfig): ClawdisConfig {
   const identity = cfg.identity;
   if (!identity) return cfg;
 
-  const emoji = identity.emoji?.trim();
   const name = identity.name?.trim();
 
-  const messages = cfg.messages ?? {};
   const routing = cfg.routing ?? {};
   const groupChat = routing.groupChat ?? {};
 
   let mutated = false;
   const next: ClawdisConfig = { ...cfg };
-
-  if (emoji && !messages.responsePrefix) {
-    next.messages = { ...(next.messages ?? messages), responsePrefix: emoji };
-    mutated = true;
-  }
 
   if (name && !groupChat.mentionPatterns) {
     const parts = name.split(/\s+/).filter(Boolean).map(escapeRegExp);

@@ -11,9 +11,10 @@ import {
 import { loadModelCatalog } from "../agents/model-catalog.js";
 import {
   buildAllowedModelSet,
+  buildModelAliasIndex,
   modelKey,
-  parseModelRef,
   resolveConfiguredModelRef,
+  resolveModelRefFromString,
 } from "../agents/model-selection.js";
 import {
   abortEmbeddedPiRun,
@@ -41,7 +42,10 @@ import {
 import { logVerbose } from "../globals.js";
 import { buildProviderSummary } from "../infra/provider-summary.js";
 import { triggerClawdisRestart } from "../infra/restart.js";
-import { drainSystemEvents } from "../infra/system-events.js";
+import {
+  drainSystemEvents,
+  enqueueSystemEvent,
+} from "../infra/system-events.js";
 import { clearCommandLane, getQueueSize } from "../process/command-queue.js";
 import { defaultRuntime } from "../runtime.js";
 import { normalizeE164 } from "../utils.js";
@@ -262,16 +266,21 @@ export async function getReplyFromConfig(
   });
   const defaultProvider = mainModel.provider;
   const defaultModel = mainModel.model;
+  const aliasIndex = buildModelAliasIndex({ cfg, defaultProvider });
   let provider = defaultProvider;
   let model = defaultModel;
   if (opts?.isHeartbeat) {
     const heartbeatRaw = agentCfg?.heartbeat?.model?.trim() ?? "";
     const heartbeatRef = heartbeatRaw
-      ? parseModelRef(heartbeatRaw, defaultProvider)
+      ? resolveModelRefFromString({
+          raw: heartbeatRaw,
+          defaultProvider,
+          aliasIndex,
+        })
       : null;
     if (heartbeatRef) {
-      provider = heartbeatRef.provider;
-      model = heartbeatRef.model;
+      provider = heartbeatRef.ref.provider;
+      model = heartbeatRef.ref.model;
     }
   }
   let contextTokens =
@@ -555,6 +564,12 @@ export async function getReplyFromConfig(
     lookupContextTokens(model) ??
     DEFAULT_CONTEXT_TOKENS;
 
+  const initialModelLabel = `${provider}/${model}`;
+  const formatModelSwitchEvent = (label: string, alias?: string) =>
+    alias
+      ? `Model switched to ${alias} (${label}).`
+      : `Model switched to ${label}.`;
+
   const directiveOnly = (() => {
     if (
       !hasThinkDirective &&
@@ -586,9 +601,14 @@ export async function getReplyFromConfig(
       }
       for (const entry of allowedModelCatalog) {
         const label = `${entry.provider}/${entry.id}`;
+        const aliases = aliasIndex.byKey.get(label);
+        const aliasSuffix =
+          aliases && aliases.length > 0
+            ? ` (alias: ${aliases.join(", ")})`
+            : "";
         const suffix =
           entry.name && entry.name !== entry.id ? ` — ${entry.name}` : "";
-        lines.push(`- ${label}${suffix}`);
+        lines.push(`- ${label}${aliasSuffix}${suffix}`);
       }
       cleanupTyping();
       return { text: lines.join("\n") };
@@ -613,26 +633,45 @@ export async function getReplyFromConfig(
     }
 
     let modelSelection:
-      | { provider: string; model: string; isDefault: boolean }
+      | { provider: string; model: string; isDefault: boolean; alias?: string }
       | undefined;
     if (hasModelDirective && rawModelDirective) {
-      const parsed = parseModelRef(rawModelDirective, defaultProvider);
-      if (!parsed) {
+      const resolved = resolveModelRefFromString({
+        raw: rawModelDirective,
+        defaultProvider,
+        aliasIndex,
+      });
+      if (!resolved) {
         cleanupTyping();
         return {
           text: `Unrecognized model "${rawModelDirective}". Use /model to list available models.`,
         };
       }
-      const key = modelKey(parsed.provider, parsed.model);
+      const key = modelKey(resolved.ref.provider, resolved.ref.model);
       if (allowedModelKeys.size > 0 && !allowedModelKeys.has(key)) {
         cleanupTyping();
         return {
-          text: `Model "${parsed.provider}/${parsed.model}" is not allowed. Use /model to list available models.`,
+          text: `Model "${resolved.ref.provider}/${resolved.ref.model}" is not allowed. Use /model to list available models.`,
         };
       }
       const isDefault =
-        parsed.provider === defaultProvider && parsed.model === defaultModel;
-      modelSelection = { ...parsed, isDefault };
+        resolved.ref.provider === defaultProvider &&
+        resolved.ref.model === defaultModel;
+      modelSelection = {
+        provider: resolved.ref.provider,
+        model: resolved.ref.model,
+        isDefault,
+        alias: resolved.alias,
+      };
+      const nextLabel = `${modelSelection.provider}/${modelSelection.model}`;
+      if (nextLabel !== initialModelLabel) {
+        enqueueSystemEvent(
+          formatModelSwitchEvent(nextLabel, modelSelection.alias),
+          {
+            contextKey: `model:${nextLabel}`,
+          },
+        );
+      }
     }
 
     if (sessionEntry && sessionStore && sessionKey) {
@@ -680,10 +719,13 @@ export async function getReplyFromConfig(
     }
     if (modelSelection) {
       const label = `${modelSelection.provider}/${modelSelection.model}`;
+      const labelWithAlias = modelSelection.alias
+        ? `${modelSelection.alias} (${label})`
+        : label;
       parts.push(
         modelSelection.isDefault
-          ? `Model reset to default (${label}).`
-          : `Model set to ${label}.`,
+          ? `Model reset to default (${labelWithAlias}).`
+          : `Model set to ${labelWithAlias}.`,
       );
     }
     if (hasQueueDirective && inlineQueueMode) {
@@ -716,22 +758,33 @@ export async function getReplyFromConfig(
       updated = true;
     }
     if (hasModelDirective && rawModelDirective) {
-      const parsed = parseModelRef(rawModelDirective, defaultProvider);
-      if (parsed) {
-        const key = modelKey(parsed.provider, parsed.model);
+      const resolved = resolveModelRefFromString({
+        raw: rawModelDirective,
+        defaultProvider,
+        aliasIndex,
+      });
+      if (resolved) {
+        const key = modelKey(resolved.ref.provider, resolved.ref.model);
         if (allowedModelKeys.size === 0 || allowedModelKeys.has(key)) {
           const isDefault =
-            parsed.provider === defaultProvider &&
-            parsed.model === defaultModel;
+            resolved.ref.provider === defaultProvider &&
+            resolved.ref.model === defaultModel;
           if (isDefault) {
             delete sessionEntry.providerOverride;
             delete sessionEntry.modelOverride;
           } else {
-            sessionEntry.providerOverride = parsed.provider;
-            sessionEntry.modelOverride = parsed.model;
+            sessionEntry.providerOverride = resolved.ref.provider;
+            sessionEntry.modelOverride = resolved.ref.model;
           }
-          provider = parsed.provider;
-          model = parsed.model;
+          provider = resolved.ref.provider;
+          model = resolved.ref.model;
+          const nextLabel = `${provider}/${model}`;
+          if (nextLabel !== initialModelLabel) {
+            enqueueSystemEvent(
+              formatModelSwitchEvent(nextLabel, resolved.alias),
+              { contextKey: `model:${nextLabel}` },
+            );
+          }
           contextTokens =
             agentCfg?.contextTokens ??
             lookupContextTokens(model) ??
@@ -1197,8 +1250,7 @@ export async function getReplyFromConfig(
           [groupIntro, perGroupExtra].filter(Boolean).join("\n\n").trim() ||
           undefined,
         ownerNumbers: ownerList.length > 0 ? ownerList : undefined,
-        enforceFinalTag:
-          provider === "lmstudio" || provider === "ollama" ? true : undefined,
+        enforceFinalTag: provider === "ollama" ? true : undefined,
         provider,
         model,
         thinkLevel: resolvedThinkLevel,

@@ -6,19 +6,24 @@ final class MenuSessionsInjector: NSObject, NSMenuDelegate {
     static let shared = MenuSessionsInjector()
 
     private let tag = 9_415_557
+    private let nodesTag = 9_415_558
     private let fallbackWidth: CGFloat = 320
     private let activeWindowSeconds: TimeInterval = 24 * 60 * 60
 
     private weak var originalDelegate: NSMenuDelegate?
     private weak var statusItem: NSStatusItem?
     private var loadTask: Task<Void, Never>?
+    private var nodesLoadTask: Task<Void, Never>?
     private var isMenuOpen = false
     private var lastKnownMenuWidth: CGFloat?
+    private var menuOpenWidth: CGFloat?
 
     private var cachedSnapshot: SessionStoreSnapshot?
     private var cachedErrorText: String?
     private var cacheUpdatedAt: Date?
     private let refreshIntervalSeconds: TimeInterval = 12
+    private let nodesStore = InstancesStore.shared
+    private let gatewayDiscovery = GatewayDiscoveryModel()
     #if DEBUG
     private var testControlChannelConnected: Bool?
     #endif
@@ -36,23 +41,38 @@ final class MenuSessionsInjector: NSObject, NSMenuDelegate {
         if self.loadTask == nil {
             self.loadTask = Task { await self.refreshCache(force: true) }
         }
+
+        self.nodesStore.start()
+        self.gatewayDiscovery.start()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
         self.originalDelegate?.menuWillOpen?(menu)
         self.isMenuOpen = true
+        self.menuOpenWidth = self.currentMenuWidth(for: menu)
 
         self.inject(into: menu)
+        self.injectNodes(into: menu)
 
-        // Refresh in background for the next open (but only when connected).
+        // Refresh in background for the next open; keep width stable while open.
         self.loadTask?.cancel()
         self.loadTask = Task { [weak self] in
             guard let self else { return }
             await self.refreshCache(force: false)
             await MainActor.run {
                 guard self.isMenuOpen else { return }
-                // SwiftUI might have refreshed menu items; re-inject once.
                 self.inject(into: menu)
+                self.injectNodes(into: menu)
+            }
+        }
+
+        self.nodesLoadTask?.cancel()
+        self.nodesLoadTask = Task { [weak self] in
+            guard let self else { return }
+            await self.nodesStore.refresh()
+            await MainActor.run {
+                guard self.isMenuOpen else { return }
+                self.injectNodes(into: menu)
             }
         }
     }
@@ -60,7 +80,9 @@ final class MenuSessionsInjector: NSObject, NSMenuDelegate {
     func menuDidClose(_ menu: NSMenu) {
         self.originalDelegate?.menuDidClose?(menu)
         self.isMenuOpen = false
+        self.menuOpenWidth = nil
         self.loadTask?.cancel()
+        self.nodesLoadTask?.cancel()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -157,6 +179,75 @@ final class MenuSessionsInjector: NSObject, NSMenuDelegate {
             guard let self, let headerView else { return }
             self.captureMenuWidthIfAvailable(from: headerView)
         }
+    }
+
+    private func injectNodes(into menu: NSMenu) {
+        for item in menu.items where item.tag == self.nodesTag {
+            menu.removeItem(item)
+        }
+
+        guard let insertIndex = self.findNodesInsertIndex(in: menu) else { return }
+        let width = self.initialWidth(for: menu)
+        var cursor = insertIndex
+
+        let entries = self.sortedNodeEntries()
+        let topSeparator = NSMenuItem.separator()
+        topSeparator.tag = self.nodesTag
+        menu.insertItem(topSeparator, at: cursor)
+        cursor += 1
+
+        guard self.isControlChannelConnected else {
+            menu.insertItem(
+                self.makeMessageItem(text: "No connection to gateway", symbolName: "wifi.slash", width: width),
+                at: cursor)
+            cursor += 1
+            let separator = NSMenuItem.separator()
+            separator.tag = self.nodesTag
+            menu.insertItem(separator, at: cursor)
+            return
+        }
+
+        if let error = self.nodesStore.lastError?.nonEmpty {
+            menu.insertItem(self.makeMessageItem(text: "Error: \(error)", symbolName: "exclamationmark.triangle",
+                width: width), at: cursor)
+            cursor += 1
+        } else if let status = self.nodesStore.statusMessage?.nonEmpty {
+            menu.insertItem(self.makeMessageItem(text: status, symbolName: "info.circle", width: width), at: cursor)
+            cursor += 1
+        }
+
+        if entries.isEmpty {
+            let title = self.nodesStore.isLoading ? "Loading nodes..." : "No nodes yet"
+            menu.insertItem(self.makeMessageItem(text: title, symbolName: "circle.dashed", width: width), at: cursor)
+            cursor += 1
+        } else {
+            for entry in entries.prefix(8) {
+                let item = NSMenuItem()
+                item.tag = self.nodesTag
+                item.target = self
+                item.action = #selector(self.copyNodeSummary(_:))
+                item.representedObject = NodeMenuEntryFormatter.summaryText(entry)
+                item.view = HighlightedMenuItemHostView(
+                    rootView: AnyView(NodeMenuRowView(entry: entry, width: width)),
+                    width: width)
+                item.submenu = self.buildNodeSubmenu(entry: entry)
+                menu.insertItem(item, at: cursor)
+                cursor += 1
+            }
+
+            if entries.count > 8 {
+                let moreItem = NSMenuItem()
+                moreItem.tag = self.nodesTag
+                moreItem.title = "More Nodes..."
+                moreItem.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: nil)
+                let overflow = Array(entries.dropFirst(8))
+                moreItem.submenu = self.buildNodesOverflowMenu(entries: overflow, width: width)
+                menu.insertItem(moreItem, at: cursor)
+                cursor += 1
+            }
+        }
+
+        _ = cursor
     }
 
     private var isControlChannelConnected: Bool {
@@ -321,6 +412,92 @@ final class MenuSessionsInjector: NSObject, NSMenuDelegate {
         return menu
     }
 
+    private func buildNodesOverflowMenu(entries: [InstanceInfo], width: CGFloat) -> NSMenu {
+        let menu = NSMenu()
+        for entry in entries {
+            let item = NSMenuItem()
+            item.target = self
+            item.action = #selector(self.copyNodeSummary(_:))
+            item.representedObject = NodeMenuEntryFormatter.summaryText(entry)
+            item.view = HighlightedMenuItemHostView(
+                rootView: AnyView(NodeMenuRowView(entry: entry, width: width)),
+                width: width)
+            item.submenu = self.buildNodeSubmenu(entry: entry)
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func buildNodeSubmenu(entry: InstanceInfo) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        menu.addItem(self.makeNodeCopyItem(label: "ID", value: entry.id))
+
+        if let host = entry.host?.nonEmpty {
+            menu.addItem(self.makeNodeCopyItem(label: "Host", value: host))
+        }
+
+        if let ip = entry.ip?.nonEmpty {
+            menu.addItem(self.makeNodeCopyItem(label: "IP", value: ip))
+        }
+
+        menu.addItem(self.makeNodeCopyItem(label: "Role", value: NodeMenuEntryFormatter.roleText(entry)))
+
+        if let platform = NodeMenuEntryFormatter.platformText(entry) {
+            menu.addItem(self.makeNodeCopyItem(label: "Platform", value: platform))
+        }
+
+        if let version = entry.version?.nonEmpty {
+            menu.addItem(self.makeNodeCopyItem(label: "Version", value: self.formatVersionLabel(version)))
+        }
+
+        menu.addItem(self.makeNodeDetailItem(label: "Last seen", value: entry.ageDescription))
+
+        if entry.lastInputSeconds != nil {
+            menu.addItem(self.makeNodeDetailItem(label: "Last input", value: entry.lastInputDescription))
+        }
+
+        if let reason = entry.reason?.nonEmpty {
+            menu.addItem(self.makeNodeDetailItem(label: "Reason", value: reason))
+        }
+
+        if let sshURL = self.sshURL(for: entry) {
+            menu.addItem(.separator())
+            menu.addItem(self.makeNodeActionItem(title: "Open SSH", url: sshURL))
+        }
+
+        return menu
+    }
+
+    private func makeNodeDetailItem(label: String, value: String) -> NSMenuItem {
+        let item = NSMenuItem(title: "\(label): \(value)", action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }
+
+    private func makeNodeCopyItem(label: String, value: String) -> NSMenuItem {
+        let item = NSMenuItem(title: "\(label): \(value)", action: #selector(self.copyNodeValue(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = value
+        return item
+    }
+
+    private func makeNodeActionItem(title: String, url: URL) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(self.openNodeSSH(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = url
+        return item
+    }
+    private func formatVersionLabel(_ version: String) -> String {
+        let trimmed = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return version }
+        if trimmed.hasPrefix("v") { return trimmed }
+        if let first = trimmed.unicodeScalars.first, CharacterSet.decimalDigits.contains(first) {
+            return "v\(trimmed)"
+        }
+        return trimmed
+    }
     @objc
     private func patchThinking(_ sender: NSMenuItem) {
         guard let dict = sender.representedObject as? [String: Any],
@@ -423,6 +600,118 @@ final class MenuSessionsInjector: NSObject, NSMenuDelegate {
         }
     }
 
+    @objc
+    private func copyNodeSummary(_ sender: NSMenuItem) {
+        guard let summary = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(summary, forType: .string)
+    }
+
+    @objc
+    private func copyNodeValue(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    @objc
+    private func openNodeSSH(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+
+        if let appURL = self.preferredTerminalAppURL() {
+            NSWorkspace.shared.open(
+                [url],
+                withApplicationAt: appURL,
+                configuration: NSWorkspace.OpenConfiguration(),
+                completionHandler: nil)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func preferredTerminalAppURL() -> URL? {
+        if let ghosty = self.ghostyAppURL() { return ghosty }
+        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
+    }
+
+    private func ghostyAppURL() -> URL? {
+        let candidates = [
+            "/Applications/Ghosty.app",
+            ("~/Applications/Ghosty.app" as NSString).expandingTildeInPath,
+        ]
+        for path in candidates where FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        return nil
+    }
+
+    private func sshURL(for entry: InstanceInfo) -> URL? {
+        guard NodeMenuEntryFormatter.isGateway(entry) else { return nil }
+        guard let gateway = self.matchingGateway(for: entry) else { return nil }
+        guard let host = self.sanitizedTailnetHost(gateway.tailnetDns) ?? gateway.lanHost else { return nil }
+        let user = NSUserName()
+        return self.buildSSHURL(user: user, host: host, port: gateway.sshPort)
+    }
+
+    private func matchingGateway(for entry: InstanceInfo) -> GatewayDiscoveryModel.DiscoveredGateway? {
+        let candidates = self.entryHostCandidates(entry)
+        guard !candidates.isEmpty else { return nil }
+        return self.gatewayDiscovery.gateways.first { gateway in
+            let gatewayTokens = self.gatewayHostTokens(gateway)
+            return candidates.contains { gatewayTokens.contains($0) }
+        }
+    }
+
+    private func entryHostCandidates(_ entry: InstanceInfo) -> [String] {
+        let raw: [String?] = [
+            entry.host,
+            entry.ip,
+            NodeMenuEntryFormatter.primaryName(entry),
+        ]
+        return raw.compactMap(self.normalizedHostToken(_:))
+    }
+
+    private func gatewayHostTokens(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) -> [String] {
+        let raw: [String?] = [
+            gateway.displayName,
+            gateway.lanHost,
+            gateway.tailnetDns,
+        ]
+        return raw.compactMap(self.normalizedHostToken(_:))
+    }
+
+    private func normalizedHostToken(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        let lower = trimmed.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        if lower.hasSuffix(".localdomain") {
+            return lower.replacingOccurrences(of: ".localdomain", with: ".local")
+        }
+        return lower
+    }
+
+    private func sanitizedTailnetHost(_ host: String?) -> String? {
+        guard let host else { return nil }
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        if trimmed.hasSuffix(".internal.") || trimmed.hasSuffix(".internal") {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func buildSSHURL(user: String, host: String, port: Int) -> URL? {
+        var components = URLComponents()
+        components.scheme = "ssh"
+        components.user = user
+        components.host = host
+        if port != 22 {
+            components.port = port
+        }
+        return components.url
+    }
+
     // MARK: - Width + placement
 
     private func findInsertIndex(in menu: NSMenu) -> Int? {
@@ -442,15 +731,63 @@ final class MenuSessionsInjector: NSObject, NSMenuDelegate {
         return menu.items.count
     }
 
-    private func initialWidth(for menu: NSMenu) -> CGFloat {
-        let candidates: [CGFloat] = [
-            menu.minimumWidth,
-            self.lastKnownMenuWidth ?? 0,
-            self.fallbackWidth,
-        ]
-        let resolved = candidates.max() ?? self.fallbackWidth
-        return max(300, resolved)
+    private func findNodesInsertIndex(in menu: NSMenu) -> Int? {
+        if let idx = menu.items.firstIndex(where: { $0.title == "Send Heartbeats" }) {
+            if let sepIdx = menu.items[..<idx].lastIndex(where: { $0.isSeparatorItem }) {
+                return sepIdx
+            }
+            return idx
+        }
+
+        if let sepIdx = menu.items.firstIndex(where: { $0.isSeparatorItem }) {
+            return sepIdx
+        }
+
+        if menu.items.count >= 1 { return 1 }
+        return menu.items.count
     }
+
+    private func initialWidth(for menu: NSMenu) -> CGFloat {
+        if let openWidth = self.menuOpenWidth {
+            return max(300, openWidth)
+        }
+        return self.currentMenuWidth(for: menu)
+    }
+
+    private func menuWindowWidth(for menu: NSMenu) -> CGFloat? {
+        var menuWindow: NSWindow?
+        for item in menu.items {
+            if let window = item.view?.window {
+                menuWindow = window
+                break
+            }
+        }
+        guard let width = menuWindow?.contentView?.bounds.width, width > 0 else { return nil }
+        return width
+    }
+
+    private func sortedNodeEntries() -> [InstanceInfo] {
+        let entries = self.nodesStore.instances.filter { entry in
+            let mode = entry.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return mode != "health"
+        }
+        return entries.sorted { lhs, rhs in
+            let lhsGateway = NodeMenuEntryFormatter.isGateway(lhs)
+            let rhsGateway = NodeMenuEntryFormatter.isGateway(rhs)
+            if lhsGateway != rhsGateway { return lhsGateway }
+
+            let lhsLocal = NodeMenuEntryFormatter.isLocal(lhs)
+            let rhsLocal = NodeMenuEntryFormatter.isLocal(rhs)
+            if lhsLocal != rhsLocal { return lhsLocal }
+
+            let lhsName = NodeMenuEntryFormatter.primaryName(lhs).lowercased()
+            let rhsName = NodeMenuEntryFormatter.primaryName(rhs).lowercased()
+            if lhsName == rhsName { return lhs.ts > rhs.ts }
+            return lhsName < rhsName
+        }
+    }
+
+
 
     // MARK: - Views
 
@@ -468,8 +805,23 @@ final class MenuSessionsInjector: NSObject, NSMenuDelegate {
     }
 
     private func captureMenuWidthIfAvailable(from view: NSView) {
+        guard !self.isMenuOpen else { return }
         guard let width = view.window?.contentView?.bounds.width, width > 0 else { return }
         self.lastKnownMenuWidth = max(300, width)
+    }
+
+    private func currentMenuWidth(for menu: NSMenu) -> CGFloat {
+        if let width = self.menuWindowWidth(for: menu) {
+            return max(300, width)
+        }
+        let candidates: [CGFloat] = [
+            menu.size.width,
+            menu.minimumWidth,
+            self.lastKnownMenuWidth ?? 0,
+            self.fallbackWidth,
+        ]
+        let resolved = candidates.max() ?? self.fallbackWidth
+        return max(300, resolved)
     }
 }
 
@@ -490,81 +842,3 @@ extension MenuSessionsInjector {
     }
 }
 #endif
-
-private final class HighlightedMenuItemHostView: NSView {
-    private let baseView: AnyView
-    private let hosting: NSHostingView<AnyView>
-    private var targetWidth: CGFloat
-    private var tracking: NSTrackingArea?
-    private var hovered = false {
-        didSet { self.updateHighlight() }
-    }
-
-    init(rootView: AnyView, width: CGFloat) {
-        self.baseView = rootView
-        self.hosting = NSHostingView(rootView: AnyView(rootView.environment(\.menuItemHighlighted, false)))
-        self.targetWidth = max(1, width)
-        super.init(frame: .zero)
-
-        self.addSubview(self.hosting)
-        self.hosting.autoresizingMask = [.width, .height]
-        self.updateSizing()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override var intrinsicContentSize: NSSize {
-        self.hosting.fittingSize
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking {
-            self.removeTrackingArea(tracking)
-        }
-        let options: NSTrackingArea.Options = [
-            .mouseEnteredAndExited,
-            .activeAlways,
-            .inVisibleRect,
-        ]
-        let area = NSTrackingArea(rect: self.bounds, options: options, owner: self, userInfo: nil)
-        self.addTrackingArea(area)
-        self.tracking = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        _ = event
-        self.hovered = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        _ = event
-        self.hovered = false
-    }
-
-    override func layout() {
-        super.layout()
-        self.hosting.frame = self.bounds
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        if self.hovered {
-            NSColor.selectedContentBackgroundColor.setFill()
-            self.bounds.fill()
-        }
-        super.draw(dirtyRect)
-    }
-
-    private func updateHighlight() {
-        self.hosting.rootView = AnyView(self.baseView.environment(\.menuItemHighlighted, self.hovered))
-        self.updateSizing()
-        self.needsDisplay = true
-    }
-
-    private func updateSizing() {
-        self.hosting.frame.size.width = self.targetWidth
-        let size = self.hosting.fittingSize
-        self.frame = NSRect(origin: .zero, size: NSSize(width: self.targetWidth, height: size.height))
-    }
-}
