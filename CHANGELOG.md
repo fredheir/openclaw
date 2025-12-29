@@ -1,6 +1,28 @@
 # Changelog
 
-## 2.0.0-beta3 — Unreleased (2025-12-26)
+## 2.0.0-beta5 — Unreleased
+
+### Fixes
+- macOS: Voice Wake now fully tears down the Speech pipeline when disabled (cancel pending restarts, drop stale callbacks) to avoid high CPU in the background.
+- iOS/Android nodes: enable scrolling for loaded web pages in the Canvas WebView (default scaffold stays touch-first).
+- macOS menu: device list now uses `node.list` (devices only; no agent/tool presence entries).
+- macOS menu: device list now shows connected nodes only.
+- iOS node: fix ReplayKit screen recording crash caused by queue isolation assertions during capture.
+- iOS/Android nodes: bridge auto-connect refreshes stale tokens and settings now show richer bridge/device details.
+- CLI: avoid spurious gateway close errors after successful request/response cycles.
+- Tests: add Swift Testing coverage for camera errors and Kotest coverage for Android bridge endpoints.
+
+## 2.0.0-beta4 — 2025-12-27
+
+### Fixes
+- Package contents: include Discord/hooks build outputs in the npm tarball to avoid missing module errors.
+- Heartbeat replies now drop any output containing `HEARTBEAT_OK`, preventing stray emoji/text from being delivered.
+- macOS menu now refreshes the control channel after the gateway starts and shows “Connecting to gateway…” while the gateway is coming up.
+- macOS local mode now waits for the gateway to be ready before configuring the control channel, avoiding false “no connection” flashes.
+- WhatsApp watchdog now forces a reconnect even if the socket close event stalls (force-close to unblock reconnect loop).
+- Gateway presence now reports macOS product version (via `sw_vers`) instead of Darwin kernel version.
+
+## 2.0.0-beta3 — 2025-12-27
 
 ### Highlights
 - First-class Clawdis tools (browser, canvas, nodes, cron) replace the old `clawdis-*` skills; tool schemas are now injected directly into the agent runtime.
@@ -22,6 +44,7 @@
 ### Fixes
 - Heartbeat replies now strip repeated `HEARTBEAT_OK` tails to avoid accidental “OK OK” spam.
 - Heartbeat delivery now uses the last non-empty payload, preventing tool preambles from swallowing the final reply.
+- Heartbeats now skip WhatsApp delivery when the web provider is inactive or unlinked (instead of logging “no active gateway listener”).
 - Heartbeat failure logs now include the error reason instead of `[object Object]`.
 - Duration strings now accept `h` (hours) where durations are parsed (e.g., heartbeat intervals).
 - WhatsApp inbound now normalizes more wrapper types so quoted reply bodies are extracted reliably.
@@ -42,6 +65,7 @@
 - LM Studio responses API: tools payloads no longer include `strict: null`, and LM Studio no longer gets forced `<think>/<final>` tags.
 - Identity emoji no longer auto-prefixes replies (set `messages.responsePrefix` explicitly if desired).
 - Model switches now enqueue a system event so the next run knows the active model.
+- `/model status` now lists available models (same as `/model`).
 - `process log` pagination is now line-based (omit `offset` to grab the last N lines).
 - macOS WebChat: assistant bubbles now update correctly when toggling light/dark mode.
 - macOS: avoid spawning a duplicate gateway process when an external listener already exists.
@@ -75,6 +99,7 @@
 - Menu hover highlights now span the full width (including submenu arrows).
 - Menu session rows now refresh while open without width changes (no more stuck “Loading sessions…”).
 - Menu width no longer grows on hover when moving the mouse across rows.
+- Context usage bars now have higher contrast in light mode.
 - macOS node timeouts now share a single async timeout helper for consistent behavior.
 - WebChat window defaults tightened (narrower width, edge-to-edge layout) and the SwiftUI tag removed from the title.
 

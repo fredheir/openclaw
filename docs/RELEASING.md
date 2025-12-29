@@ -29,6 +29,7 @@ Use `pnpm` (Node 22+) from the repo root. Keep the working tree clean before tag
 - [ ] `pnpm lint`
 - [ ] `pnpm test` (or `pnpm test:coverage` if you need coverage output)
 - [ ] `pnpm run build` (last sanity check after tests)
+- [ ] `pnpm release:check` (verifies npm pack contents)
 - [ ] (Optional) Spot-check the web gateway if your changes affect send/receive paths.
 
 5) **macOS app (Sparkle)**
@@ -36,6 +37,7 @@ Use `pnpm` (Node 22+) from the repo root. Keep the working tree clean before tag
 - [ ] Generate the Sparkle appcast (HTML notes via `scripts/make_appcast.sh`) and update `appcast.xml`.
 - [ ] Keep the app zip (and optional dSYM zip) ready to attach to the GitHub release.
 - [ ] Follow `docs/mac/release.md` for the exact commands and required env vars.
+  - If notarizing, use the `clawdis-notary` keychain profile created from App Store Connect API env vars (see `docs/mac/release.md`).
 
 6) **Publish (npm)**
 - [ ] Confirm git status is clean; commit and push as needed.
