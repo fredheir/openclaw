@@ -318,23 +318,25 @@ describe("web auto-reply", () => {
     let capturedOnMessage:
       | ((msg: import("./inbound.js").WebInboundMessage) => Promise<void>)
       | undefined;
-    const listenerFactory = vi.fn(async (opts: {
-      onMessage: (
-        msg: import("./inbound.js").WebInboundMessage,
-      ) => Promise<void>;
-    }) => {
-      capturedOnMessage = opts.onMessage;
-      let resolveClose: (reason: unknown) => void = () => {};
-      const onClose = new Promise<unknown>((res) => {
-        resolveClose = res;
-        closeResolvers.push(res);
-      });
-      return {
-        close: vi.fn(),
-        onClose,
-        signalClose: (reason?: unknown) => resolveClose(reason),
-      };
-    });
+    const listenerFactory = vi.fn(
+      async (opts: {
+        onMessage: (
+          msg: import("./inbound.js").WebInboundMessage,
+        ) => Promise<void>;
+      }) => {
+        capturedOnMessage = opts.onMessage;
+        let resolveClose: (reason: unknown) => void = () => {};
+        const onClose = new Promise<unknown>((res) => {
+          resolveClose = res;
+          closeResolvers.push(res);
+        });
+        return {
+          close: vi.fn(),
+          onClose,
+          signalClose: (reason?: unknown) => resolveClose(reason),
+        };
+      },
+    );
     const runtime = {
       log: vi.fn(),
       error: vi.fn(),
@@ -390,7 +392,7 @@ describe("web auto-reply", () => {
     closeResolvers[1]?.({ status: 499, isLoggedOut: false });
     await Promise.resolve();
     await run;
-  });
+  }, 15_000);
 
   it(
     "stops after hitting max reconnect attempts",

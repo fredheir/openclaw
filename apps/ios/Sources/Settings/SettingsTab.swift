@@ -20,6 +20,8 @@ struct SettingsTab: View {
     @AppStorage("node.displayName") private var displayName: String = "iOS Node"
     @AppStorage("node.instanceId") private var instanceId: String = UUID().uuidString
     @AppStorage("voiceWake.enabled") private var voiceWakeEnabled: Bool = false
+    @AppStorage("talk.enabled") private var talkEnabled: Bool = false
+    @AppStorage("talk.button.enabled") private var talkButtonEnabled: Bool = true
     @AppStorage("camera.enabled") private var cameraEnabled: Bool = true
     @AppStorage("screen.preventSleep") private var preventSleep: Bool = true
     @AppStorage("bridge.preferredStableID") private var preferredBridgeStableID: String = ""
@@ -156,6 +158,12 @@ struct SettingsTab: View {
                         .onChange(of: self.voiceWakeEnabled) { _, newValue in
                             self.appModel.setVoiceWakeEnabled(newValue)
                         }
+                    Toggle("Talk Mode", isOn: self.$talkEnabled)
+                        .onChange(of: self.talkEnabled) { _, newValue in
+                            self.appModel.setTalkEnabled(newValue)
+                        }
+                    // Keep this separate so users can hide the side bubble without disabling Talk Mode.
+                    Toggle("Show Talk Button", isOn: self.$talkButtonEnabled)
 
                     NavigationLink {
                         VoiceWakeWordsSettingsView()
