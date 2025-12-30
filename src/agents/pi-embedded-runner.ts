@@ -309,8 +309,11 @@ async function getApiKeyForModel(
   model: Model<Api>,
   authStorage: ReturnType<typeof discoverAuthStorage>,
 ): Promise<string> {
-  const storedKey = await authStorage.getApiKey(model.provider);
-  if (storedKey) return storedKey;
+  // Skip cache for OAuth providers - always read fresh from file
+  if (!isOAuthProvider(model.provider)) {
+    const storedKey = await authStorage.getApiKey(model.provider);
+    if (storedKey) return storedKey;
+  }
   ensureOAuthStorage();
   if (model.provider === "anthropic") {
     const fallbackKey = getFallbackApiKey();
