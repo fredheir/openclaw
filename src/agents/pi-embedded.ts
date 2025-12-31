@@ -10,5 +10,4 @@ export {
   queueEmbeddedPiMessage,
   resolveEmbeddedSessionLane,
   runEmbeddedPiAgent,
-  setRateLimitFallbackCallback,
 } from "./pi-embedded-runner.js";
