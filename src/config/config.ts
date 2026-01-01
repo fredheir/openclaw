@@ -165,12 +165,36 @@ export type DiscordConfig = {
   mediaMaxMb?: number;
 };
 
+export type SignalConfig = {
+  /** If false, do not start the Signal provider. Default: true. */
+  enabled?: boolean;
+  /** Optional explicit E.164 account for signal-cli. */
+  account?: string;
+  /** Optional full base URL for signal-cli HTTP daemon. */
+  httpUrl?: string;
+  /** HTTP host for signal-cli daemon (default 127.0.0.1). */
+  httpHost?: string;
+  /** HTTP port for signal-cli daemon (default 8080). */
+  httpPort?: number;
+  /** signal-cli binary path (default: signal-cli). */
+  cliPath?: string;
+  /** Auto-start signal-cli daemon (default: true if httpUrl not set). */
+  autoStart?: boolean;
+  receiveMode?: "on-start" | "manual";
+  ignoreAttachments?: boolean;
+  ignoreStories?: boolean;
+  sendReadReceipts?: boolean;
+  allowFrom?: Array<string | number>;
+  mediaMaxMb?: number;
+};
+
 export type QueueMode = "queue" | "interrupt";
 
 export type QueueModeBySurface = {
   whatsapp?: QueueMode;
   telegram?: QueueMode;
   discord?: QueueMode;
+  signal?: QueueMode;
   webchat?: QueueMode;
 };
 
@@ -280,6 +304,13 @@ export type GatewayTailscaleConfig = {
   resetOnExit?: boolean;
 };
 
+export type GatewayRemoteConfig = {
+  /** Remote Gateway WebSocket URL (ws:// or wss://). */
+  url?: string;
+  /** Token for remote auth (when the gateway requires token auth). */
+  token?: string;
+};
+
 export type GatewayConfig = {
   /**
    * Explicit gateway mode. When set to "remote", local gateway start is disabled.
@@ -294,6 +325,7 @@ export type GatewayConfig = {
   controlUi?: GatewayControlUiConfig;
   auth?: GatewayAuthConfig;
   tailscale?: GatewayTailscaleConfig;
+  remote?: GatewayRemoteConfig;
 };
 
 export type SkillConfig = {
@@ -313,7 +345,7 @@ export type SkillsLoadConfig = {
 
 export type SkillsInstallConfig = {
   preferBrew?: boolean;
-  nodeManager?: "npm" | "pnpm" | "yarn";
+  nodeManager?: "npm" | "pnpm" | "yarn" | "bun";
 };
 
 export type SkillsConfig = {
@@ -375,6 +407,13 @@ export type ClawdisConfig = {
     theme?: string;
     emoji?: string;
   };
+  wizard?: {
+    lastRunAt?: string;
+    lastRunVersion?: string;
+    lastRunCommit?: string;
+    lastRunCommand?: string;
+    lastRunMode?: "local" | "remote";
+  };
   logging?: LoggingConfig;
   browser?: BrowserConfig;
   ui?: {
@@ -408,8 +447,8 @@ export type ClawdisConfig = {
       every?: string;
       /** Heartbeat model override (provider/model). */
       model?: string;
-      /** Delivery target (last|whatsapp|telegram|discord|none). */
-      target?: "last" | "whatsapp" | "telegram" | "discord" | "none";
+      /** Delivery target (last|whatsapp|telegram|discord|signal|none). */
+      target?: "last" | "whatsapp" | "telegram" | "discord" | "signal" | "none";
       /** Optional delivery override (E.164 for WhatsApp, chat id for Telegram). */
       to?: string;
       /** Override the heartbeat prompt body (default: "HEARTBEAT"). */
@@ -433,6 +472,7 @@ export type ClawdisConfig = {
   web?: WebConfig;
   telegram?: TelegramConfig;
   discord?: DiscordConfig;
+  signal?: SignalConfig;
   cron?: CronConfig;
   hooks?: HooksConfig;
   bridge?: BridgeConfig;
@@ -531,6 +571,7 @@ const QueueModeBySurfaceSchema = z
     whatsapp: QueueModeSchema.optional(),
     telegram: QueueModeSchema.optional(),
     discord: QueueModeSchema.optional(),
+    signal: QueueModeSchema.optional(),
     webchat: QueueModeSchema.optional(),
   })
   .optional();
@@ -576,6 +617,7 @@ const HeartbeatSchema = z
         z.literal("whatsapp"),
         z.literal("telegram"),
         z.literal("discord"),
+        z.literal("signal"),
         z.literal("none"),
       ])
       .optional(),
@@ -635,6 +677,7 @@ const HookMappingSchema = z
         z.literal("whatsapp"),
         z.literal("telegram"),
         z.literal("discord"),
+        z.literal("signal"),
       ])
       .optional(),
     to: z.string().optional(),
@@ -684,6 +727,17 @@ const ClawdisSchema = z.object({
       name: z.string().optional(),
       theme: z.string().optional(),
       emoji: z.string().optional(),
+    })
+    .optional(),
+  wizard: z
+    .object({
+      lastRunAt: z.string().optional(),
+      lastRunVersion: z.string().optional(),
+      lastRunCommit: z.string().optional(),
+      lastRunCommand: z.string().optional(),
+      lastRunMode: z
+        .union([z.literal("local"), z.literal("remote")])
+        .optional(),
     })
     .optional(),
   logging: z
@@ -828,6 +882,25 @@ const ClawdisSchema = z.object({
       mediaMaxMb: z.number().positive().optional(),
     })
     .optional(),
+  signal: z
+    .object({
+      enabled: z.boolean().optional(),
+      account: z.string().optional(),
+      httpUrl: z.string().optional(),
+      httpHost: z.string().optional(),
+      httpPort: z.number().int().positive().optional(),
+      cliPath: z.string().optional(),
+      autoStart: z.boolean().optional(),
+      receiveMode: z
+        .union([z.literal("on-start"), z.literal("manual")])
+        .optional(),
+      ignoreAttachments: z.boolean().optional(),
+      ignoreStories: z.boolean().optional(),
+      sendReadReceipts: z.boolean().optional(),
+      allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
+      mediaMaxMb: z.number().positive().optional(),
+    })
+    .optional(),
   bridge: z
     .object({
       enabled: z.boolean().optional(),
@@ -899,6 +972,12 @@ const ClawdisSchema = z.object({
           resetOnExit: z.boolean().optional(),
         })
         .optional(),
+      remote: z
+        .object({
+          url: z.string().optional(),
+          token: z.string().optional(),
+        })
+        .optional(),
     })
     .optional(),
   skills: z
@@ -913,7 +992,12 @@ const ClawdisSchema = z.object({
         .object({
           preferBrew: z.boolean().optional(),
           nodeManager: z
-            .union([z.literal("npm"), z.literal("pnpm"), z.literal("yarn")])
+            .union([
+              z.literal("npm"),
+              z.literal("pnpm"),
+              z.literal("yarn"),
+              z.literal("bun"),
+            ])
             .optional(),
         })
         .optional(),

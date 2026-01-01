@@ -14,15 +14,43 @@
 - UI: add optional `ui.seamColor` accent to tint the Talk Mode side bubble (macOS/iOS/Android).
 - Nix mode: opt-in declarative config + read-only settings UI when `CLAWDIS_NIX_MODE=1` (thanks @joshp123 for the persistence — earned my trust; I'll merge these going forward).
 - Agent runtime: accept legacy `Z_AI_API_KEY` for Z.AI provider auth (maps to `ZAI_API_KEY`).
+- Signal: add `signal-cli` JSON-RPC support for send/receive via the Signal provider.
 - Tests: add a Z.AI live test gate for smoke validation when keys are present.
 - macOS Debug: add app log verbosity and rolling file log toggle for swift-log-backed app logs.
+- CLI: add onboarding wizard (gateway + workspace + skills) with daemon installers and Anthropic/Minimax setup paths.
+- CLI: add ASCII banner header to wizard entry points.
+- CLI: add `configure`, `doctor`, and `update` wizards for ongoing setup, health checks, and modernization.
+- CLI: add Signal CLI auto-install from GitHub releases in the wizard and persist wizard run metadata in config.
+- CLI: add remote gateway client config (gateway.remote.*) with Bonjour-assisted discovery.
+- Skills: allow `bun` as a node manager for skill installs.
+- Skills: add `things-mac` (Things 3 CLI) for read/search plus add/update via URL scheme.
+- Tests: add a Docker-based onboarding E2E harness.
+- Tests: harden wizard E2E flows for reset, providers, skills, and remote non-interactive runs.
 
 ### Fixes
+- Skills: switch imsg installer to brew tap formula.
+- Skills: gate macOS-only skills by OS and surface block reasons in the Skills UI.
+- macOS codesign: skip hardened runtime for ad-hoc signing and avoid empty options args (#70) — thanks @petter-b
+- macOS packaging: move rpath config into swift build for reliability (#69) — thanks @petter-b
+- macOS: prioritize main bundle for device resources to prevent crash (#73) — thanks @petter-b
+- macOS remote: route settings through gateway config and avoid local config reads in remote mode.
+- Telegram: align token resolution for cron/agent/CLI sends (env/config/tokenFile) to prevent isolated delivery failures (#76).
+- Chat UI: clear composer input immediately and allow clear while editing to prevent duplicate sends (#72) — thanks @hrdwdmrbl
+- Restart: use systemd on Linux (and report actual restart method) instead of always launchctl.
+- Gateway relay: detect Bun binaries via execPath to resolve packaged assets on macOS.
+- Docs: add manual OAuth setup for remote/headless deployments (#67) — thanks @wstock
 - Docs/agent tools: clarify that browser `wait` should be avoided by default and used only in exceptional cases.
 - Browser tools: `upload` supports auto-click refs, direct `inputRef`/`element` file inputs, and emits input/change after `setFiles` so JS-heavy sites pick up attachments.
+- Browser tools: harden CDP readiness (HTTP + WS), retry CDP connects, and auto-restart the clawd browser when the socket handshake stalls.
+- Browser CLI: add `clawdis browser reset-profile` to move the clawd profile to Trash when it gets wedged.
+- Signal: fix daemon startup race (wait for `/api/v1/check`) and normalize JSON-RPC `version` probe parsing.
+- Docs/Signal: clarify bot-number vs personal-account setup (self-chat loop protection) and add a quickstart config snippet.
+- Docs: refresh the CLI wizard guide and highlight onboarding in the README.
+- CLI: tighten onboarding prompt typing to keep bun builds green.
 - macOS: Voice Wake now fully tears down the Speech pipeline when disabled (cancel pending restarts, drop stale callbacks) to avoid high CPU in the background.
 - macOS menu: add a Talk Mode action alongside the Open Dashboard/Chat/Canvas entries.
 - macOS Debug: hide “Restart Gateway” when the app won’t start a local gateway (remote mode / attach-only).
+- macOS Debug: add an icon for the App Logging submenu.
 - macOS Talk Mode: orb overlay refresh, ElevenLabs request logging, API key status in settings, and auto-select first voice when none is configured.
 - macOS Talk Mode: add hard timeout around ElevenLabs TTS synthesis to avoid getting stuck “speaking” forever on hung requests.
 - macOS Talk Mode: avoid stuck playback when the audio player never starts (fail-fast + watchdog).
@@ -41,6 +69,8 @@
 - Android Chat UI: use `onPrimary` for user bubble text to preserve contrast (thanks @Syhids).
 - Control UI: sync sidebar navigation with the URL for deep-linking, and auto-scroll chat to the latest message.
 - Control UI: disable Web Chat + Talk when no iOS/Android node is connected; refreshed Web Chat styling and keyboard send.
+- Control UI: keep chat pinned to the latest message while typing/sending and restore drafts on send failures.
+- Control UI: soften chat bubble text opacity for calmer readability.
 - macOS Web Chat: improve empty/error states, focus message field on open, keep pill/send inside the input field, and make the composer pill edge-to-edge with square top corners.
 - macOS: bundle Control UI assets into the app relay so the packaged app can serve them (thanks @mbelinky).
 - Talk Mode: wait for chat history to surface the assistant reply before starting TTS (macOS/iOS/Android).
@@ -58,6 +88,8 @@
 - macOS menu: device list now shows connected nodes only.
 - macOS menu: device rows now pack platform/version on the first line, and command lists wrap in submenus.
 - macOS menu: split device platform/version across first and second rows for better fit.
+- macOS Canvas: show remote control status in the debug overlay and log A2UI auto-nav decisions.
+- Canvas A2UI: polish the debug status HUD styling.
 - iOS node: fix ReplayKit screen recording crash caused by queue isolation assertions during capture.
 - iOS Talk Mode: avoid audio tap queue assertions when starting recognition.
 - macOS: use $HOME/Library/pnpm for SSH PATH exports (thanks @mbelinky).
@@ -71,6 +103,7 @@
 - macOS menu: top status line now shows pending node pairing approvals (incl. repairs).
 - CLI: avoid spurious gateway close errors after successful request/response cycles.
 - Agent runtime: clamp tool-result images to the 5MB Anthropic limit to avoid hard request rejections.
+- Agent runtime: write v2 session headers so Pi session branching stays in the Clawdis sessions dir.
 - Tests: add Swift Testing coverage for camera errors and Kotest coverage for Android bridge endpoints.
 
 ## 2.0.0-beta4 — 2025-12-27

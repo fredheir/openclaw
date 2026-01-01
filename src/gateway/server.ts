@@ -139,9 +139,12 @@ import { setCommandLaneConcurrency } from "../process/command-queue.js";
 import { runExec } from "../process/exec.js";
 import { monitorWebProvider, webAuthExists } from "../providers/web/index.js";
 import { defaultRuntime } from "../runtime.js";
+import { monitorSignalProvider, sendMessageSignal } from "../signal/index.js";
+import { probeSignal, type SignalProbe } from "../signal/probe.js";
 import { monitorTelegramProvider } from "../telegram/monitor.js";
 import { probeTelegram, type TelegramProbe } from "../telegram/probe.js";
 import { sendMessageTelegram } from "../telegram/send.js";
+import { resolveTelegramToken } from "../telegram/token.js";
 import { normalizeE164, resolveUserPath } from "../utils.js";
 import type { WebProviderStatus } from "../web/auto-reply.js";
 import { startWebLoginWithQr, waitForWebLogin } from "../web/login-qr.js";
@@ -283,37 +286,12 @@ const logWsControl = log.child("ws");
 const logWhatsApp = logProviders.child("whatsapp");
 const logTelegram = logProviders.child("telegram");
 const logDiscord = logProviders.child("discord");
+const logSignal = logProviders.child("signal");
 const canvasRuntime = runtimeForLogger(logCanvas);
 const whatsappRuntimeEnv = runtimeForLogger(logWhatsApp);
 const telegramRuntimeEnv = runtimeForLogger(logTelegram);
 const discordRuntimeEnv = runtimeForLogger(logDiscord);
-
-function loadTelegramToken(
-  config: ClawdisConfig,
-  opts: { logMissing?: boolean } = {},
-): string {
-  if (process.env.TELEGRAM_BOT_TOKEN) {
-    return process.env.TELEGRAM_BOT_TOKEN.trim();
-  }
-  if (config.telegram?.tokenFile) {
-    const filePath = config.telegram.tokenFile;
-    if (!fs.existsSync(filePath)) {
-      if (opts.logMissing) {
-        logTelegram.warn(`telegram.tokenFile not found: ${filePath}`);
-      }
-      return "";
-    }
-    try {
-      return fs.readFileSync(filePath, "utf-8").trim();
-    } catch (err) {
-      if (opts.logMissing) {
-        logTelegram.warn(`telegram.tokenFile read failed: ${String(err)}`);
-      }
-      return "";
-    }
-  }
-  return config.telegram?.botToken?.trim() ?? "";
-}
+const signalRuntimeEnv = runtimeForLogger(logSignal);
 
 function resolveBonjourCliPath(): string | undefined {
   const envPath = process.env.CLAWDIS_CLI_PATH?.trim();
@@ -1367,7 +1345,7 @@ export async function startGatewayServer(
           wakeMode: "now" | "next-heartbeat";
           sessionKey: string;
           deliver: boolean;
-          channel: "last" | "whatsapp" | "telegram" | "discord";
+          channel: "last" | "whatsapp" | "telegram" | "discord" | "signal";
           to?: string;
           thinking?: string;
           timeoutSeconds?: number;
@@ -1392,6 +1370,7 @@ export async function startGatewayServer(
       channelRaw === "whatsapp" ||
       channelRaw === "telegram" ||
       channelRaw === "discord" ||
+      channelRaw === "signal" ||
       channelRaw === "last"
         ? channelRaw
         : channelRaw === undefined
@@ -1400,7 +1379,7 @@ export async function startGatewayServer(
     if (channel === null) {
       return {
         ok: false,
-        error: "channel must be last|whatsapp|telegram|discord",
+        error: "channel must be last|whatsapp|telegram|discord|signal",
       };
     }
     const toRaw = payload.to;
@@ -1451,7 +1430,7 @@ export async function startGatewayServer(
     wakeMode: "now" | "next-heartbeat";
     sessionKey: string;
     deliver: boolean;
-    channel: "last" | "whatsapp" | "telegram" | "discord";
+    channel: "last" | "whatsapp" | "telegram" | "discord" | "signal";
     to?: string;
     thinking?: string;
     timeoutSeconds?: number;
@@ -1734,9 +1713,11 @@ export async function startGatewayServer(
   let whatsappAbort: AbortController | null = null;
   let telegramAbort: AbortController | null = null;
   let discordAbort: AbortController | null = null;
+  let signalAbort: AbortController | null = null;
   let whatsappTask: Promise<unknown> | null = null;
   let telegramTask: Promise<unknown> | null = null;
   let discordTask: Promise<unknown> | null = null;
+  let signalTask: Promise<unknown> | null = null;
   let whatsappRuntime: WebProviderStatus = {
     running: false,
     connected: false,
@@ -1770,6 +1751,19 @@ export async function startGatewayServer(
     lastStartAt: null,
     lastStopAt: null,
     lastError: null,
+  };
+  let signalRuntime: {
+    running: boolean;
+    lastStartAt?: number | null;
+    lastStopAt?: number | null;
+    lastError?: string | null;
+    baseUrl?: string | null;
+  } = {
+    running: false,
+    lastStartAt: null,
+    lastStopAt: null,
+    lastError: null,
+    baseUrl: null,
   };
   const clients = new Set<Client>();
   let seq = 0;
@@ -1936,7 +1930,9 @@ export async function startGatewayServer(
       logTelegram.info("skipping provider start (telegram.enabled=false)");
       return;
     }
-    const telegramToken = loadTelegramToken(cfg, { logMissing: true });
+    const { token: telegramToken } = resolveTelegramToken(cfg, {
+      logMissingFile: (message) => logTelegram.warn(message),
+    });
     if (!telegramToken.trim()) {
       telegramRuntime = {
         ...telegramRuntime,
@@ -1944,7 +1940,7 @@ export async function startGatewayServer(
         lastError: "not configured",
       };
       logTelegram.info(
-        "skipping provider start (no TELEGRAM_BOT_TOKEN/config)",
+        "skipping provider start (no TELEGRAM_BOT_TOKEN/telegram config)",
       );
       return;
     }
@@ -2102,10 +2098,96 @@ export async function startGatewayServer(
     };
   };
 
+  const startSignalProvider = async () => {
+    if (signalTask) return;
+    const cfg = loadConfig();
+    if (!cfg.signal) {
+      signalRuntime = {
+        ...signalRuntime,
+        running: false,
+        lastError: "not configured",
+      };
+      logSignal.info("skipping provider start (signal not configured)");
+      return;
+    }
+    if (cfg.signal?.enabled === false) {
+      signalRuntime = {
+        ...signalRuntime,
+        running: false,
+        lastError: "disabled",
+      };
+      logSignal.info("skipping provider start (signal.enabled=false)");
+      return;
+    }
+    const host = cfg.signal?.httpHost?.trim() || "127.0.0.1";
+    const port = cfg.signal?.httpPort ?? 8080;
+    const baseUrl = cfg.signal?.httpUrl?.trim() || `http://${host}:${port}`;
+    logSignal.info(`starting provider (${baseUrl})`);
+    signalAbort = new AbortController();
+    signalRuntime = {
+      ...signalRuntime,
+      running: true,
+      lastStartAt: Date.now(),
+      lastError: null,
+      baseUrl,
+    };
+    const task = monitorSignalProvider({
+      baseUrl,
+      account: cfg.signal?.account,
+      cliPath: cfg.signal?.cliPath,
+      httpHost: cfg.signal?.httpHost,
+      httpPort: cfg.signal?.httpPort,
+      autoStart: cfg.signal?.autoStart,
+      receiveMode: cfg.signal?.receiveMode,
+      ignoreAttachments: cfg.signal?.ignoreAttachments,
+      ignoreStories: cfg.signal?.ignoreStories,
+      sendReadReceipts: cfg.signal?.sendReadReceipts,
+      allowFrom: cfg.signal?.allowFrom,
+      mediaMaxMb: cfg.signal?.mediaMaxMb,
+      runtime: signalRuntimeEnv,
+      abortSignal: signalAbort.signal,
+    })
+      .catch((err) => {
+        signalRuntime = {
+          ...signalRuntime,
+          lastError: formatError(err),
+        };
+        logSignal.error(`provider exited: ${formatError(err)}`);
+      })
+      .finally(() => {
+        signalAbort = null;
+        signalTask = null;
+        signalRuntime = {
+          ...signalRuntime,
+          running: false,
+          lastStopAt: Date.now(),
+        };
+      });
+    signalTask = task;
+  };
+
+  const stopSignalProvider = async () => {
+    if (!signalAbort && !signalTask) return;
+    signalAbort?.abort();
+    try {
+      await signalTask;
+    } catch {
+      // ignore
+    }
+    signalAbort = null;
+    signalTask = null;
+    signalRuntime = {
+      ...signalRuntime,
+      running: false,
+      lastStopAt: Date.now(),
+    };
+  };
+
   const startProviders = async () => {
     await startWhatsAppProvider();
     await startDiscordProvider();
     await startTelegramProvider();
+    await startSignalProvider();
   };
 
   const broadcast = (
@@ -3156,7 +3238,9 @@ export async function startGatewayServer(
           typeof link?.channel === "string" ? link.channel.trim() : "";
         const channel = channelRaw.toLowerCase();
         const provider =
-          channel === "whatsapp" || channel === "telegram"
+          channel === "whatsapp" ||
+          channel === "telegram" ||
+          channel === "signal"
             ? channel
             : undefined;
         const to =
@@ -3950,14 +4034,8 @@ export async function startGatewayServer(
                   ? Math.max(1000, timeoutMsRaw)
                   : 10_000;
               const cfg = loadConfig();
-              const envToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
-              const configToken = cfg.telegram?.botToken?.trim();
-              const telegramToken = envToken || configToken || "";
-              const tokenSource = envToken
-                ? "env"
-                : configToken
-                  ? "config"
-                  : "none";
+              const { token: telegramToken, source: tokenSource } =
+                resolveTelegramToken(cfg);
               let telegramProbe: TelegramProbe | undefined;
               let lastProbeAt: number | null = null;
               if (probe && telegramToken) {
@@ -3982,6 +4060,21 @@ export async function startGatewayServer(
               if (probe && discordToken) {
                 discordProbe = await probeDiscord(discordToken, timeoutMs);
                 discordLastProbeAt = Date.now();
+              }
+
+              const signalCfg = cfg.signal;
+              const signalEnabled = signalCfg?.enabled !== false;
+              const signalHost = signalCfg?.httpHost?.trim() || "127.0.0.1";
+              const signalPort = signalCfg?.httpPort ?? 8080;
+              const signalBaseUrl =
+                signalCfg?.httpUrl?.trim() ||
+                `http://${signalHost}:${signalPort}`;
+              const signalConfigured = Boolean(signalCfg) && signalEnabled;
+              let signalProbe: SignalProbe | undefined;
+              let signalLastProbeAt: number | null = null;
+              if (probe && signalConfigured) {
+                signalProbe = await probeSignal(signalBaseUrl, timeoutMs);
+                signalLastProbeAt = Date.now();
               }
 
               const linked = await webAuthExists();
@@ -4026,6 +4119,16 @@ export async function startGatewayServer(
                     lastError: discordRuntime.lastError ?? null,
                     probe: discordProbe,
                     lastProbeAt: discordLastProbeAt,
+                  },
+                  signal: {
+                    configured: signalConfigured,
+                    baseUrl: signalBaseUrl,
+                    running: signalRuntime.running,
+                    lastStartAt: signalRuntime.lastStartAt ?? null,
+                    lastStopAt: signalRuntime.lastStopAt ?? null,
+                    lastError: signalRuntime.lastError ?? null,
+                    probe: signalProbe,
+                    lastProbeAt: signalLastProbeAt,
                   },
                 },
                 undefined,
@@ -5890,7 +5993,7 @@ export async function startGatewayServer(
               try {
                 if (provider === "telegram") {
                   const cfg = loadConfig();
-                  const token = loadTelegramToken(cfg);
+                  const { token } = resolveTelegramToken(cfg);
                   const result = await sendMessageTelegram(to, message, {
                     mediaUrl: params.mediaUrl,
                     verbose: isVerbose(),
@@ -5917,6 +6020,28 @@ export async function startGatewayServer(
                     runId: idem,
                     messageId: result.messageId,
                     channelId: result.channelId,
+                    provider,
+                  };
+                  dedupe.set(`send:${idem}`, {
+                    ts: Date.now(),
+                    ok: true,
+                    payload,
+                  });
+                  respond(true, payload, undefined, { provider });
+                } else if (provider === "signal") {
+                  const cfg = loadConfig();
+                  const host = cfg.signal?.httpHost?.trim() || "127.0.0.1";
+                  const port = cfg.signal?.httpPort ?? 8080;
+                  const baseUrl =
+                    cfg.signal?.httpUrl?.trim() || `http://${host}:${port}`;
+                  const result = await sendMessageSignal(to, message, {
+                    mediaUrl: params.mediaUrl,
+                    baseUrl,
+                    account: cfg.signal?.account,
+                  });
+                  const payload = {
+                    runId: idem,
+                    messageId: result.messageId,
                     provider,
                   };
                   dedupe.set(`send:${idem}`, {
@@ -6061,6 +6186,7 @@ export async function startGatewayServer(
                   requestedChannel === "whatsapp" ||
                   requestedChannel === "telegram" ||
                   requestedChannel === "discord" ||
+                  requestedChannel === "signal" ||
                   requestedChannel === "webchat"
                 ) {
                   return requestedChannel;
@@ -6079,7 +6205,8 @@ export async function startGatewayServer(
                 if (
                   resolvedChannel === "whatsapp" ||
                   resolvedChannel === "telegram" ||
-                  resolvedChannel === "discord"
+                  resolvedChannel === "discord" ||
+                  resolvedChannel === "signal"
                 ) {
                   return lastTo || undefined;
                 }
@@ -6324,6 +6451,7 @@ export async function startGatewayServer(
       await stopWhatsAppProvider();
       await stopTelegramProvider();
       await stopDiscordProvider();
+      await stopSignalProvider();
       cron.stop();
       heartbeatRunner.stop();
       broadcast("shutdown", {
@@ -6361,7 +6489,9 @@ export async function startGatewayServer(
         await stopBrowserControlServerIfStarted().catch(() => {});
       }
       await Promise.allSettled(
-        [whatsappTask, telegramTask].filter(Boolean) as Array<Promise<unknown>>,
+        [whatsappTask, telegramTask, signalTask].filter(Boolean) as Array<
+          Promise<unknown>
+        >,
       );
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve, reject) =>
