@@ -440,7 +440,6 @@ export type ClawdisConfig = {
   canvasHost?: CanvasHostConfig;
   talk?: TalkConfig;
   gateway?: GatewayConfig;
-  skills?: SkillsConfig;
 };
 
 /**
