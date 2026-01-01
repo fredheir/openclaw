@@ -917,16 +917,18 @@ const ClawdisSchema = z.object({
             .optional(),
         })
         .optional(),
-      entries: z.record(
-        z.string(),
-        z
-          .object({
-            enabled: z.boolean().optional(),
-            apiKey: z.string().optional(),
-            env: z.record(z.string(), z.string()).optional(),
-          })
-          .passthrough(),
-      ).optional(),
+      entries: z
+        .record(
+          z.string(),
+          z
+            .object({
+              enabled: z.boolean().optional(),
+              apiKey: z.string().optional(),
+              env: z.record(z.string(), z.string()).optional(),
+            })
+            .passthrough(),
+        )
+        .optional(),
     })
     .optional(),
 });

@@ -246,7 +246,6 @@ export async function getReplyFromConfig(
   opts?: GetReplyOptions,
   configOverride?: ClawdisConfig,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
-
   const cfg = configOverride ?? loadConfig();
   const workspaceDirRaw = cfg.agent?.workspace ?? DEFAULT_AGENT_WORKSPACE_DIR;
   const agentCfg = cfg.agent;
