@@ -2,12 +2,24 @@
 
 ## 2.0.0-beta5 — Unreleased
 
+### Breaking
+- Skills config schema moved under `skills.*`:
+  - `skillsLoad.extraDirs` → `skills.load.extraDirs`
+  - `skillsInstall.*` → `skills.install.*`
+  - per-skill config map moved to `skills.entries` (e.g. `skills.peekaboo.enabled` → `skills.entries.peekaboo.enabled`)
+  - new optional bundled allowlist: `skills.allowBundled` (only affects bundled skills)
+
 ### Features
 - Talk mode: continuous speech conversations (macOS/iOS/Android) with ElevenLabs TTS, reply directives, and optional interrupt-on-speech.
 - UI: add optional `ui.seamColor` accent to tint the Talk Mode side bubble (macOS/iOS/Android).
+- Nix mode: opt-in declarative config + read-only settings UI when `CLAWDIS_NIX_MODE=1` (thanks @joshp123 for the persistence — earned my trust; I'll merge these going forward).
+- Agent runtime: accept legacy `Z_AI_API_KEY` for Z.AI provider auth (maps to `ZAI_API_KEY`).
+- Tests: add a Z.AI live test gate for smoke validation when keys are present.
+- macOS Debug: add app log verbosity and rolling file log toggle for swift-log-backed app logs.
 
 ### Fixes
 - Docs/agent tools: clarify that browser `wait` should be avoided by default and used only in exceptional cases.
+- Browser tools: `upload` supports auto-click refs, direct `inputRef`/`element` file inputs, and emits input/change after `setFiles` so JS-heavy sites pick up attachments.
 - macOS: Voice Wake now fully tears down the Speech pipeline when disabled (cancel pending restarts, drop stale callbacks) to avoid high CPU in the background.
 - macOS menu: add a Talk Mode action alongside the Open Dashboard/Chat/Canvas entries.
 - macOS Debug: hide “Restart Gateway” when the app won’t start a local gateway (remote mode / attach-only).
@@ -26,8 +38,11 @@
 - Talk Mode: treat history timestamps as seconds or milliseconds to avoid stale assistant picks (macOS/iOS/Android).
 - Chat UI: clear streaming/tool bubbles when external runs finish, preventing duplicate assistant bubbles.
 - Chat UI: user bubbles use `ui.seamColor` (fallback to a calmer default blue).
+- Android Chat UI: use `onPrimary` for user bubble text to preserve contrast (thanks @Syhids).
 - Control UI: sync sidebar navigation with the URL for deep-linking, and auto-scroll chat to the latest message.
 - Control UI: disable Web Chat + Talk when no iOS/Android node is connected; refreshed Web Chat styling and keyboard send.
+- macOS Web Chat: improve empty/error states, focus message field on open, keep pill/send inside the input field, and make the composer pill edge-to-edge with square top corners.
+- macOS: bundle Control UI assets into the app relay so the packaged app can serve them (thanks @mbelinky).
 - Talk Mode: wait for chat history to surface the assistant reply before starting TTS (macOS/iOS/Android).
 - iOS Talk Mode: fix chat completion wait to time out even if no events arrive (prevents “Thinking…” hangs).
 - iOS Talk Mode: keep recognition running during playback to support interrupt-on-speech.
@@ -45,7 +60,9 @@
 - macOS menu: split device platform/version across first and second rows for better fit.
 - iOS node: fix ReplayKit screen recording crash caused by queue isolation assertions during capture.
 - iOS Talk Mode: avoid audio tap queue assertions when starting recognition.
+- macOS: use $HOME/Library/pnpm for SSH PATH exports (thanks @mbelinky).
 - iOS/Android nodes: bridge auto-connect refreshes stale tokens and settings now show richer bridge/device details.
+- macOS: bundle device model resources to prevent Instances crashes (thanks @mbelinky).
 - iOS/Android nodes: status pill now surfaces camera activity instead of overlay toasts.
 - iOS/Android/macOS nodes: camera snaps recompress to keep base64 payloads under 5 MB.
 - iOS/Android nodes: status pill now surfaces pairing, screen recording, voice wake, and foreground-required states.

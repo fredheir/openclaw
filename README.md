@@ -19,6 +19,8 @@ It answers you on the surfaces you already use (WhatsApp, Telegram, Discord, Web
 
 If you want a private, single-user assistant that feels local, fast, and always-on, this is it.
 
+Using Claude Pro/Max subscription? See `docs/onboarding.md` for the Anthropic OAuth setup.
+
 ```
 Your surfaces
    │
@@ -44,6 +46,7 @@ Your surfaces
 - **Automation-ready** — browser control, media handling, and tool streaming.
 - **Local-first control plane** — the Gateway owns state, everything else connects.
 - **Group chats** — mention-based by default, `/activation always|mention` per group (owner-only).
+- **Nix mode** — opt-in declarative config + read-only UI when `CLAWDIS_NIX_MODE=1`.
 
 ## How it works (short)
 

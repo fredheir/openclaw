@@ -7,6 +7,16 @@ import { z } from "zod";
 
 import { parseDurationMs } from "../cli/parse-duration.js";
 
+/**
+ * Nix mode detection: When CLAWDIS_NIX_MODE=1, the gateway is running under Nix.
+ * In this mode:
+ * - No auto-install flows should be attempted
+ * - Missing dependencies should produce actionable Nix-specific error messages
+ * - Config is managed externally (read-only from Nix perspective)
+ */
+export const isNixMode = process.env.CLAWDIS_NIX_MODE === "1";
+
+export type ReplyMode = "text" | "command";
 export type SessionScope = "per-sender" | "global";
 
 export type SessionConfig = {
@@ -131,6 +141,8 @@ export type TelegramConfig = {
   /** If false, do not start the Telegram provider. Default: true. */
   enabled?: boolean;
   botToken?: string;
+  /** Path to file containing bot token (for secret managers like agenix) */
+  tokenFile?: string;
   requireMention?: boolean;
   allowFrom?: Array<string | number>;
   mediaMaxMb?: number;
@@ -304,6 +316,14 @@ export type SkillsInstallConfig = {
   nodeManager?: "npm" | "pnpm" | "yarn";
 };
 
+export type SkillsConfig = {
+  /** Optional bundled-skill allowlist (only affects bundled skills). */
+  allowBundled?: string[];
+  load?: SkillsLoadConfig;
+  install?: SkillsInstallConfig;
+  entries?: Record<string, SkillConfig>;
+};
+
 export type ModelApi =
   | "openai-completions"
   | "openai-responses"
@@ -361,8 +381,7 @@ export type ClawdisConfig = {
     /** Accent color for Clawdis UI chrome (hex). */
     seamColor?: string;
   };
-  skillsLoad?: SkillsLoadConfig;
-  skillsInstall?: SkillsInstallConfig;
+  skills?: SkillsConfig;
   models?: ModelsConfig;
   agent?: {
     /** Model id (provider/model), e.g. "anthropic/claude-opus-4-5". */
@@ -421,15 +440,25 @@ export type ClawdisConfig = {
   canvasHost?: CanvasHostConfig;
   talk?: TalkConfig;
   gateway?: GatewayConfig;
-  skills?: Record<string, SkillConfig>;
+  skills?: SkillsConfig;
 };
 
-// New branding path (preferred)
-export const CONFIG_PATH_CLAWDIS = path.join(
-  os.homedir(),
-  ".clawdis",
-  "clawdis.json",
-);
+/**
+ * State directory for mutable data (sessions, logs, caches).
+ * Can be overridden via CLAWDIS_STATE_DIR environment variable.
+ * Default: ~/.clawdis
+ */
+export const STATE_DIR_CLAWDIS =
+  process.env.CLAWDIS_STATE_DIR ?? path.join(os.homedir(), ".clawdis");
+
+/**
+ * Config file path (JSON5).
+ * Can be overridden via CLAWDIS_CONFIG_PATH environment variable.
+ * Default: ~/.clawdis/clawdis.json (or $CLAWDIS_STATE_DIR/clawdis.json)
+ */
+export const CONFIG_PATH_CLAWDIS =
+  process.env.CLAWDIS_CONFIG_PATH ??
+  path.join(STATE_DIR_CLAWDIS, "clawdis.json");
 
 const ModelApiSchema = z.union([
   z.literal("openai-completions"),
@@ -775,6 +804,7 @@ const ClawdisSchema = z.object({
     .object({
       enabled: z.boolean().optional(),
       botToken: z.string().optional(),
+      tokenFile: z.string().optional(),
       requireMention: z.boolean().optional(),
       allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
       mediaMaxMb: z.number().positive().optional(),
@@ -872,30 +902,33 @@ const ClawdisSchema = z.object({
         .optional(),
     })
     .optional(),
-  skillsLoad: z
-    .object({
-      extraDirs: z.array(z.string()).optional(),
-    })
-    .optional(),
-  skillsInstall: z
-    .object({
-      preferBrew: z.boolean().optional(),
-      nodeManager: z
-        .union([z.literal("npm"), z.literal("pnpm"), z.literal("yarn")])
-        .optional(),
-    })
-    .optional(),
   skills: z
-    .record(
-      z.string(),
-      z
+    .object({
+      allowBundled: z.array(z.string()).optional(),
+      load: z
         .object({
-          enabled: z.boolean().optional(),
-          apiKey: z.string().optional(),
-          env: z.record(z.string(), z.string()).optional(),
+          extraDirs: z.array(z.string()).optional(),
         })
-        .passthrough(),
-    )
+        .optional(),
+      install: z
+        .object({
+          preferBrew: z.boolean().optional(),
+          nodeManager: z
+            .union([z.literal("npm"), z.literal("pnpm"), z.literal("yarn")])
+            .optional(),
+        })
+        .optional(),
+      entries: z.record(
+        z.string(),
+        z
+          .object({
+            enabled: z.boolean().optional(),
+            apiKey: z.string().optional(),
+            env: z.record(z.string(), z.string()).optional(),
+          })
+          .passthrough(),
+      ).optional(),
+    })
     .optional(),
 });
 

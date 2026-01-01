@@ -116,8 +116,10 @@ Example:
 
 - Start here:
   - [Configuration](./configuration.md)
+  - [Nix mode](./nix.md)
   - [Clawd personal assistant setup](./clawd.md)
   - [Skills](./skills.md)
+  - [Skills config](./skills-config.md)
   - [Workspace templates](./templates/AGENTS.md)
   - [Gateway runbook](./gateway.md)
   - [Nodes (iOS/Android)](./nodes.md)

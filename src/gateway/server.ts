@@ -46,6 +46,8 @@ import { getStatusSummary } from "../commands/status.js";
 import {
   type ClawdisConfig,
   CONFIG_PATH_CLAWDIS,
+  STATE_DIR_CLAWDIS,
+  isNixMode,
   loadConfig,
   parseConfigJson5,
   readConfigFileSnapshot,
@@ -285,6 +287,33 @@ const canvasRuntime = runtimeForLogger(logCanvas);
 const whatsappRuntimeEnv = runtimeForLogger(logWhatsApp);
 const telegramRuntimeEnv = runtimeForLogger(logTelegram);
 const discordRuntimeEnv = runtimeForLogger(logDiscord);
+
+function loadTelegramToken(
+  config: ClawdisConfig,
+  opts: { logMissing?: boolean } = {},
+): string {
+  if (process.env.TELEGRAM_BOT_TOKEN) {
+    return process.env.TELEGRAM_BOT_TOKEN.trim();
+  }
+  if (config.telegram?.tokenFile) {
+    const filePath = config.telegram.tokenFile;
+    if (!fs.existsSync(filePath)) {
+      if (opts.logMissing) {
+        logTelegram.warn(`telegram.tokenFile not found: ${filePath}`);
+      }
+      return "";
+    }
+    try {
+      return fs.readFileSync(filePath, "utf-8").trim();
+    } catch (err) {
+      if (opts.logMissing) {
+        logTelegram.warn(`telegram.tokenFile read failed: ${String(err)}`);
+      }
+      return "";
+    }
+  }
+  return config.telegram?.botToken?.trim() ?? "";
+}
 
 function resolveBonjourCliPath(): string | undefined {
   const envPath = process.env.CLAWDIS_CLI_PATH?.trim();
@@ -610,6 +639,9 @@ function buildSnapshot(): Snapshot {
     health: emptyHealth,
     stateVersion: { presence: presenceVersion, health: healthVersion },
     uptimeMs,
+    // Surface resolved paths so UIs can display the true config location.
+    configPath: CONFIG_PATH_CLAWDIS,
+    stateDir: STATE_DIR_CLAWDIS,
   };
 }
 
@@ -1904,8 +1936,7 @@ export async function startGatewayServer(
       logTelegram.info("skipping provider start (telegram.enabled=false)");
       return;
     }
-    const telegramToken =
-      process.env.TELEGRAM_BOT_TOKEN ?? cfg.telegram?.botToken ?? "";
+    const telegramToken = loadTelegramToken(cfg, { logMissing: true });
     if (!telegramToken.trim()) {
       telegramRuntime = {
         ...telegramRuntime,
@@ -4790,8 +4821,9 @@ export async function startGatewayServer(
               };
               const cfg = loadConfig();
               const skills = cfg.skills ? { ...cfg.skills } : {};
-              const current = skills[p.skillKey]
-                ? { ...skills[p.skillKey] }
+              const entries = skills.entries ? { ...skills.entries } : {};
+              const current = entries[p.skillKey]
+                ? { ...entries[p.skillKey] }
                 : {};
               if (typeof p.enabled === "boolean") {
                 current.enabled = p.enabled;
@@ -4812,7 +4844,8 @@ export async function startGatewayServer(
                 }
                 current.env = nextEnv;
               }
-              skills[p.skillKey] = current;
+              entries[p.skillKey] = current;
+              skills.entries = entries;
               const nextConfig: ClawdisConfig = {
                 ...cfg,
                 skills,
@@ -5856,9 +5889,12 @@ export async function startGatewayServer(
               const provider = (params.provider ?? "whatsapp").toLowerCase();
               try {
                 if (provider === "telegram") {
+                  const cfg = loadConfig();
+                  const token = loadTelegramToken(cfg);
                   const result = await sendMessageTelegram(to, message, {
                     mediaUrl: params.mediaUrl,
                     verbose: isVerbose(),
+                    token: token || undefined,
                   });
                   const payload = {
                     runId: idem,
@@ -6184,6 +6220,9 @@ export async function startGatewayServer(
   });
   log.info(`listening on ws://${bindHost}:${port} (PID ${process.pid})`);
   log.info(`log file: ${getResolvedLoggerSettings().file}`);
+  if (isNixMode) {
+    log.info("gateway: running in Nix mode (config managed externally)");
+  }
   let tailscaleCleanup: (() => Promise<void>) | null = null;
   if (tailscaleMode !== "off") {
     try {
