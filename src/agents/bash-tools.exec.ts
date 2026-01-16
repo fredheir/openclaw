@@ -369,6 +369,10 @@ export function createExecTool(
         validateHostEnv(params.env);
       }
 
+      // Export session key for child processes (enables wake targeting)
+      if (defaults?.sessionKey) {
+        baseEnv.CLAWDBOT_SESSION_KEY = defaults.sessionKey;
+      }
       const mergedEnv = params.env ? { ...baseEnv, ...params.env } : baseEnv;
 
       const env = sandbox
