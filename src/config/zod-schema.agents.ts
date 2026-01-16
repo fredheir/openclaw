@@ -59,3 +59,17 @@ export const AudioSchema = z
   })
   .strict()
   .optional();
+
+export const PerGroupConfigSchema = z.object({
+  /** Path to agent file to load for this group (relative to workspace or absolute) */
+  agentFile: z.string().optional(),
+  /** Inline instructions to inject for this group */
+  extraInstructions: z.string().optional(),
+});
+
+export const RoutingSchema = z
+  .object({
+    /** Per-group routing configuration keyed by group JID */
+    groups: z.record(z.string(), PerGroupConfigSchema).optional(),
+  })
+  .optional();

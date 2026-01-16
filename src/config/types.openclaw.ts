@@ -19,6 +19,7 @@ import type {
   BroadcastConfig,
   CommandsConfig,
   MessagesConfig,
+  RoutingConfig,
 } from "./types.messages.js";
 import type { ModelsConfig } from "./types.models.js";
 import type { NodeHostConfig } from "./types.node-host.js";
@@ -99,6 +100,7 @@ export type OpenClawConfig = {
   bindings?: AgentBinding[];
   broadcast?: BroadcastConfig;
   audio?: AudioConfig;
+  routing?: RoutingConfig;
   messages?: MessagesConfig;
   commands?: CommandsConfig;
   approvals?: ApprovalsConfig;

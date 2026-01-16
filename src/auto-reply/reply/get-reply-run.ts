@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import * as fsSync from "node:fs";
+import path from "node:path";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
 import {
@@ -267,7 +269,40 @@ export async function runPreparedReply(
   const inboundMetaPrompt = buildInboundMetaSystemPrompt(
     isNewSession ? sessionCtx : { ...sessionCtx, ThreadStarterBody: undefined },
   );
-  const extraSystemPrompt = [inboundMetaPrompt, groupChatContext, groupIntro, groupSystemPrompt]
+  // Per-group agent file and instructions from routing.groups config
+  const groupJid = isGroupChat
+    ? (sessionCtx.From ?? "").replace(/^whatsapp:/, "").replace(/^group:/, "")
+    : undefined;
+  const perGroupConfig = groupJid ? cfg.routing?.groups?.[groupJid] : undefined;
+  const perGroupAgentContent = (() => {
+    if (!perGroupConfig?.agentFile) return undefined;
+    const agentFilePath = perGroupConfig.agentFile.startsWith("/")
+      ? perGroupConfig.agentFile
+      : path.resolve(workspaceDir, perGroupConfig.agentFile);
+    try {
+      const content = fsSync.readFileSync(agentFilePath, "utf-8");
+      // Strip YAML frontmatter if present
+      const stripped = content.startsWith("---")
+        ? content.replace(/^---[\s\S]*?\n---\s*/, "")
+        : content;
+      return stripped.trim();
+    } catch {
+      logVerbose(`Failed to read per-group agent file: ${agentFilePath}`);
+      return undefined;
+    }
+  })();
+  const perGroupExtra = [perGroupAgentContent, perGroupConfig?.extraInstructions]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  const extraSystemPrompt = [
+    inboundMetaPrompt,
+    groupChatContext,
+    groupIntro,
+    groupSystemPrompt,
+    perGroupExtra,
+  ]
     .filter(Boolean)
     .join("\n\n");
   const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";

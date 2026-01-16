@@ -1,6 +1,18 @@
 import type { QueueDropPolicy, QueueMode, QueueModeByProvider } from "./types.queue.js";
 import type { TtsConfig } from "./types.tts.js";
 
+export type PerGroupConfig = {
+  /** Path to agent file to load for this group (relative to workspace or absolute) */
+  agentFile?: string;
+  /** Inline instructions to inject for this group */
+  extraInstructions?: string;
+};
+
+export type RoutingConfig = {
+  /** Per-group routing configuration keyed by group JID */
+  groups?: Record<string, PerGroupConfig>;
+};
+
 export type GroupChatConfig = {
   mentionPatterns?: string[];
   historyLimit?: number;
