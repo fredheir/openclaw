@@ -5,6 +5,7 @@ import { resolveMergedSafeBinProfileFixtures } from "../infra/exec-safe-bin-runt
 import { logWarn } from "../logger.js";
 import { getPluginToolMeta } from "../plugins/tools.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
+import { getSubagentRunByChildSession } from "./subagent-registry.js";
 import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 import { createApplyPatchTool } from "./apply-patch.js";
@@ -372,6 +373,14 @@ export function createOpenClawCodingTools(options?: {
     return [tool];
   });
   const { cleanupMs: cleanupMsOverride, ...execDefaults } = options?.exec ?? {};
+
+  // Look up requester origin for subagent sessions (enables routing back to original chat)
+  const subagentRun =
+    options?.sessionKey && isSubagentSessionKey(options.sessionKey)
+      ? getSubagentRunByChildSession(options.sessionKey)
+      : undefined;
+  const requesterOrigin = subagentRun?.requesterOrigin;
+
   const execTool = createExecTool({
     ...execDefaults,
     host: options?.exec?.host ?? execConfig.host,
@@ -387,6 +396,11 @@ export function createOpenClawCodingTools(options?: {
     allowBackground,
     scopeKey,
     sessionKey: options?.sessionKey,
+    requesterChannel: requesterOrigin?.channel,
+    requesterTo: requesterOrigin?.to,
+    requesterThreadId:
+      requesterOrigin?.threadId != null ? String(requesterOrigin.threadId) : undefined,
+    requesterAccountId: requesterOrigin?.accountId,
     messageProvider: options?.messageProvider,
     currentChannelId: options?.currentChannelId,
     currentThreadTs: options?.currentThreadTs,

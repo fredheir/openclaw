@@ -20,6 +20,11 @@ export type ExecToolDefaults = {
   allowBackground?: boolean;
   scopeKey?: string;
   sessionKey?: string;
+  /** Requester delivery context for subagent routing (exported as CLAWDBOT_REQUESTER_*) */
+  requesterChannel?: string;
+  requesterTo?: string;
+  requesterThreadId?: string;
+  requesterAccountId?: string;
   messageProvider?: string;
   currentChannelId?: string;
   currentThreadTs?: string;

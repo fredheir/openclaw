@@ -1162,6 +1162,18 @@ export function listDescendantRunsForRequester(rootSessionKey: string): Subagent
   );
 }
 
+/**
+ * Look up a subagent run by its child session key.
+ * Used by exec tool to get requesterOrigin for routing completion messages.
+ */
+export function getSubagentRunByChildSession(
+  childSessionKey: string,
+): SubagentRunRecord | undefined {
+  const key = childSessionKey.trim();
+  if (!key) return undefined;
+  return [...subagentRuns.values()].find((entry) => entry.childSessionKey === key);
+}
+
 export function initSubagentRegistry() {
   restoreSubagentRunsOnce();
 }
