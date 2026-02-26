@@ -275,7 +275,9 @@ export async function runPreparedReply(
     : undefined;
   const perGroupConfig = groupJid ? cfg.routing?.groups?.[groupJid] : undefined;
   const perGroupAgentContent = (() => {
-    if (!perGroupConfig?.agentFile) return undefined;
+    if (!perGroupConfig?.agentFile) {
+      return undefined;
+    }
     const agentFilePath = perGroupConfig.agentFile.startsWith("/")
       ? perGroupConfig.agentFile
       : path.resolve(workspaceDir, perGroupConfig.agentFile);
@@ -396,7 +398,7 @@ export async function runPreparedReply(
   const prefixedBody = [threadContextNote, prefixedBodyBase].filter(Boolean).join("\n\n");
   const mediaNote = buildInboundMediaNote(ctx);
   const mediaReplyHint = mediaNote
-    ? "To send an image back, prefer the message tool (media/path/filePath). If you must inline, use MEDIA:https://example.com/image.jpg (spaces ok, quote if needed) or a safe relative path like MEDIA:./image.jpg. Avoid absolute paths (MEDIA:/...) and ~ paths — they are blocked for security. Keep caption in the text body."
+    ? "To send an image back, prefer the message tool (media/path/filePath). If you must inline, send only real media references and do not repeat this guidance text. Use MEDIA:<real-url> or MEDIA:./relative/path. Avoid absolute paths (MEDIA:/...) and ~/ paths - they are blocked for security. Keep caption in the text body."
     : undefined;
   let prefixedCommandBody = mediaNote
     ? [mediaNote, mediaReplyHint, prefixedBody ?? ""].filter(Boolean).join("\n").trim()
