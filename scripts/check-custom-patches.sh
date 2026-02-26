@@ -26,8 +26,8 @@ check "per-group agent loading" "src/auto-reply/reply/get-reply-run.ts" "perGrou
 
 echo ""
 echo "Patch 2: Session key + requester env exports"
-check "session key export" "src/agents/bash-tools.exec.ts" "CLAWDBOT_SESSION_KEY"
-check "requester channel export" "src/agents/bash-tools.exec.ts" "CLAWDBOT_REQUESTER_CHANNEL"
+check "session key export" "src/agents/bash-tools.exec.ts" "OPENCLAW_SESSION_KEY"
+check "requester channel export" "src/agents/bash-tools.exec.ts" "OPENCLAW_REQUESTER_CHANNEL"
 check "subagent registry lookup" "src/agents/subagent-registry.ts" "getSubagentRunByChildSession"
 check "pi-tools requester origin" "src/agents/pi-tools.ts" "getSubagentRunByChildSession"
 

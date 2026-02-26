@@ -371,20 +371,20 @@ export function createExecTool(
 
       // Export session key for child processes (enables wake targeting)
       if (defaults?.sessionKey) {
-        baseEnv.CLAWDBOT_SESSION_KEY = defaults.sessionKey;
+        baseEnv.OPENCLAW_SESSION_KEY = defaults.sessionKey;
       }
       // Export requester delivery context for subagent routing back to original chat
       if (defaults?.requesterChannel) {
-        baseEnv.CLAWDBOT_REQUESTER_CHANNEL = defaults.requesterChannel;
+        baseEnv.OPENCLAW_REQUESTER_CHANNEL = defaults.requesterChannel;
       }
       if (defaults?.requesterTo) {
-        baseEnv.CLAWDBOT_REQUESTER_TO = defaults.requesterTo;
+        baseEnv.OPENCLAW_REQUESTER_TO = defaults.requesterTo;
       }
       if (defaults?.requesterThreadId) {
-        baseEnv.CLAWDBOT_REQUESTER_THREAD_ID = defaults.requesterThreadId;
+        baseEnv.OPENCLAW_REQUESTER_THREAD_ID = defaults.requesterThreadId;
       }
       if (defaults?.requesterAccountId) {
-        baseEnv.CLAWDBOT_REQUESTER_ACCOUNT_ID = defaults.requesterAccountId;
+        baseEnv.OPENCLAW_REQUESTER_ACCOUNT_ID = defaults.requesterAccountId;
       }
       const mergedEnv = params.env ? { ...baseEnv, ...params.env } : baseEnv;
 

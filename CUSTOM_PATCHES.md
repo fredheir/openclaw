@@ -15,10 +15,10 @@ Run `scripts/check-custom-patches.sh` before completing any upstream rebase.
 ### 2. Session key + requester env var exports (exec tool)
 
 - **Files**: `src/agents/bash-tools.exec.ts`, `src/agents/bash-tools.exec-types.ts`, `src/agents/pi-tools.ts`, `src/agents/subagent-registry.ts`
-- **Purpose**: Exports CLAWDBOT*SESSION_KEY and CLAWDBOT_REQUESTER*\* env vars to child processes. Enables delegate-agent wake-back and subagent routing to original chat.
+- **Purpose**: Exports CLAWDBOT*SESSION_KEY and OPENCLAW_REQUESTER*\* env vars to child processes. Enables delegate-agent wake-back and subagent routing to original chat.
 - **Markers**:
-  - `baseEnv.CLAWDBOT_SESSION_KEY = defaults.sessionKey`
-  - `baseEnv.CLAWDBOT_REQUESTER_CHANNEL = defaults.requesterChannel`
+  - `baseEnv.OPENCLAW_SESSION_KEY = defaults.sessionKey`
+  - `baseEnv.OPENCLAW_REQUESTER_CHANNEL = defaults.requesterChannel`
   - `getSubagentRunByChildSession`
 - **Upstream candidate**: Yes - useful for any multi-agent setup
 
